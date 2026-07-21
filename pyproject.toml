@@ -8,6 +8,7 @@ dependencies = [
     "pydantic-settings>=2.2",
     "alpaca-py>=0.33",
     "asyncpg>=0.29",
+    "pandas>=2.2",
 ]
 
 [project.optional-dependencies]
@@ -25,4 +26,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["config*", "utils*", "broker*", "data*"]
+include = ["config*", "utils*", "broker*", "data*", "indicators*"]
