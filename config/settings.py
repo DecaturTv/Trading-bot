@@ -41,6 +41,25 @@ class Settings(BaseSettings):
         "debit_spread_diagonal",
     )
 
+    # Alert channels (all optional — a channel is only wired up if its
+    # required fields are present)
+    discord_webhook_url: str | None = None
+
+    telegram_bot_token: str | None = None
+    telegram_chat_id: str | None = None
+
+    twilio_account_sid: str | None = None
+    twilio_auth_token: str | None = None
+    twilio_from_number: str | None = None
+    twilio_to_number: str | None = None
+
+    smtp_host: str | None = None
+    smtp_port: int = 587
+    smtp_username: str | None = None
+    smtp_password: str | None = None
+    alert_email_from: str | None = None
+    alert_email_to: str | None = None
+
     @model_validator(mode="after")
     def _enforce_live_trading_gate(self) -> "Settings":
         if self.trading_mode == "live" and not self.live_risk_ack:

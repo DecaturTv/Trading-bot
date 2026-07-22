@@ -48,3 +48,12 @@ def test_allowed_option_strategies_excludes_collateral_heavy_strategies():
     assert "covered_call" not in settings.allowed_option_strategies
     assert "cash_secured_put" not in settings.allowed_option_strategies
     assert "long_call" in settings.allowed_option_strategies
+
+
+def test_alert_channels_default_to_unconfigured():
+    settings = Settings(_env_file=None)
+    assert settings.discord_webhook_url is None
+    assert settings.telegram_bot_token is None
+    assert settings.twilio_account_sid is None
+    assert settings.smtp_host is None
+    assert settings.smtp_port == 587
