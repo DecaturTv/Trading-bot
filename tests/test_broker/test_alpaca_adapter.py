@@ -164,6 +164,96 @@ async def test_submit_order_builds_market_order_and_maps_response():
 
 
 @pytest.mark.asyncio
+async def test_submit_multi_leg_order_builds_mleg_request_and_maps_nested_legs():
+    from broker.models import MultiLegOrderLeg, MultiLegOrderRequest, PositionIntent
+
+    adapter, trading_client, _ = make_adapter()
+    now = datetime.now(timezone.utc)
+
+    def make_leg_response(order_id, symbol, side):
+        return SimpleNamespace(
+            id=order_id,
+            symbol=symbol,
+            qty="1",
+            side=side,
+            type=AlpacaOrderType.LIMIT,
+            status=AlpacaOrderStatus.NEW,
+            filled_qty="0",
+            filled_avg_price=None,
+            submitted_at=now,
+            filled_at=None,
+            legs=None,
+        )
+
+    trading_client.submit_order.return_value = SimpleNamespace(
+        id="combo-1",
+        symbol=None,
+        qty="1",
+        side=None,
+        type=None,
+        status=AlpacaOrderStatus.NEW,
+        filled_qty="0",
+        filled_avg_price=None,
+        submitted_at=now,
+        filled_at=None,
+        legs=[
+            make_leg_response("leg-1", "AAPL260821C00150000", AlpacaOrderSide.BUY),
+            make_leg_response("leg-2", "AAPL260821C00160000", AlpacaOrderSide.SELL),
+        ],
+    )
+
+    order = await adapter.submit_multi_leg_order(
+        MultiLegOrderRequest(
+            legs=[
+                MultiLegOrderLeg(
+                    symbol="AAPL260821C00150000", side=Side.BUY, position_intent=PositionIntent.BUY_TO_OPEN
+                ),
+                MultiLegOrderLeg(
+                    symbol="AAPL260821C00160000", side=Side.SELL, position_intent=PositionIntent.SELL_TO_OPEN
+                ),
+            ],
+            qty=1,
+            limit_price=3.0,
+        )
+    )
+
+    assert order.order_id == "combo-1"
+    assert order.symbol == "AAPL260821C00150000"  # falls back to first leg's symbol
+    assert order.side is Side.BUY  # falls back when top-level side is None
+    assert order.order_type is OrderType.LIMIT  # falls back when top-level type is None
+    assert order.legs is not None
+    assert [leg.symbol for leg in order.legs] == ["AAPL260821C00150000", "AAPL260821C00160000"]
+    assert order.legs[1].side is Side.SELL
+
+    call_args = trading_client.submit_order.call_args.args[0]
+    assert call_args.order_class.value == "mleg"
+    assert call_args.limit_price == 3.0
+    assert len(call_args.legs) == 2
+
+
+@pytest.mark.asyncio
+async def test_submit_multi_leg_order_is_not_retried_on_failure():
+    from broker.models import MultiLegOrderLeg, MultiLegOrderRequest, PositionIntent
+
+    adapter, trading_client, _ = make_adapter()
+    trading_client.submit_order.side_effect = APIError("insufficient buying power")
+
+    with pytest.raises(BrokerError):
+        await adapter.submit_multi_leg_order(
+            MultiLegOrderRequest(
+                legs=[
+                    MultiLegOrderLeg(symbol="A", side=Side.BUY, position_intent=PositionIntent.BUY_TO_OPEN),
+                    MultiLegOrderLeg(symbol="B", side=Side.SELL, position_intent=PositionIntent.SELL_TO_OPEN),
+                ],
+                qty=1,
+                limit_price=3.0,
+            )
+        )
+
+    assert trading_client.submit_order.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_submit_order_is_not_retried_on_failure():
     adapter, trading_client, _ = make_adapter()
     trading_client.submit_order.side_effect = APIError("insufficient buying power")

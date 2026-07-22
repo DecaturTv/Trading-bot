@@ -130,3 +130,27 @@ class Order:
     filled_avg_price: float | None
     submitted_at: datetime | None
     filled_at: datetime | None
+    legs: "list[Order] | None" = None  # populated for multi-leg combo orders
+
+
+class PositionIntent(str, Enum):
+    BUY_TO_OPEN = "buy_to_open"
+    BUY_TO_CLOSE = "buy_to_close"
+    SELL_TO_OPEN = "sell_to_open"
+    SELL_TO_CLOSE = "sell_to_close"
+
+
+@dataclass(frozen=True)
+class MultiLegOrderLeg:
+    symbol: str
+    side: OrderSide
+    position_intent: PositionIntent
+    ratio_qty: int = 1
+
+
+@dataclass(frozen=True)
+class MultiLegOrderRequest:
+    legs: list[MultiLegOrderLeg]
+    qty: float
+    limit_price: float  # net price per spread unit (positive = net debit)
+    time_in_force: TimeInForce = TimeInForce.DAY

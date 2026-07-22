@@ -5,6 +5,8 @@ from .models import (
     Account,
     ActiveSymbol,
     Bar,
+    MultiLegOrderLeg,
+    MultiLegOrderRequest,
     OptionContract,
     OptionGreeks,
     OptionRight,
@@ -14,6 +16,7 @@ from .models import (
     OrderStatus,
     OrderType,
     Position,
+    PositionIntent,
     Quote,
     TimeInForce,
 )
@@ -25,6 +28,8 @@ __all__ = [
     "Account",
     "ActiveSymbol",
     "Bar",
+    "MultiLegOrderLeg",
+    "MultiLegOrderRequest",
     "OptionContract",
     "OptionGreeks",
     "OptionRight",
@@ -34,6 +39,7 @@ __all__ = [
     "OrderStatus",
     "OrderType",
     "Position",
+    "PositionIntent",
     "Quote",
     "TimeInForce",
 ]

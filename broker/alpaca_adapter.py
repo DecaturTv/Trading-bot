@@ -16,7 +16,9 @@ from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import AssetStatus
 from alpaca.trading.enums import ContractType as AlpacaContractType
+from alpaca.trading.enums import OrderClass as AlpacaOrderClass
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
+from alpaca.trading.enums import PositionIntent as AlpacaPositionIntent
 from alpaca.trading.enums import PositionSide
 from alpaca.trading.enums import QueryOrderStatus
 from alpaca.trading.enums import TimeInForce as AlpacaTimeInForce
@@ -25,6 +27,7 @@ from alpaca.trading.requests import (
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
+    OptionLegRequest,
     StopLimitOrderRequest,
     StopOrderRequest,
 )
@@ -38,6 +41,7 @@ from .models import (
     Account,
     ActiveSymbol,
     Bar,
+    MultiLegOrderRequest,
     OptionContract,
     OptionGreeks,
     OptionRight,
@@ -46,6 +50,7 @@ from .models import (
     OrderStatus,
     OrderType,
     Position,
+    PositionIntent,
 )
 from .models import OrderSide as Side
 from .models import Quote
@@ -54,6 +59,13 @@ from .models import TimeInForce as TIF
 _SIDE_TO_ALPACA = {Side.BUY: AlpacaOrderSide.BUY, Side.SELL: AlpacaOrderSide.SELL}
 _SIDE_FROM_ALPACA = {v: k for k, v in _SIDE_TO_ALPACA.items()}
 _SIDE_FROM_POSITION = {PositionSide.LONG: Side.BUY, PositionSide.SHORT: Side.SELL}
+
+_POSITION_INTENT_TO_ALPACA = {
+    PositionIntent.BUY_TO_OPEN: AlpacaPositionIntent.BUY_TO_OPEN,
+    PositionIntent.BUY_TO_CLOSE: AlpacaPositionIntent.BUY_TO_CLOSE,
+    PositionIntent.SELL_TO_OPEN: AlpacaPositionIntent.SELL_TO_OPEN,
+    PositionIntent.SELL_TO_CLOSE: AlpacaPositionIntent.SELL_TO_CLOSE,
+}
 
 _TIF_TO_ALPACA = {
     TIF.DAY: AlpacaTimeInForce.DAY,
@@ -137,20 +149,33 @@ def _map_bar(symbol: str, raw) -> Bar:
 
 
 def _map_order(raw) -> Order:
+    # Multi-leg combo orders have no single top-level symbol/side/type in
+    # Alpaca's response (each leg carries its own) — fall back sensibly so
+    # the combo order still maps, while each nested leg maps with its real
+    # per-leg values via this same function.
     status = _STATUS_FROM_ALPACA.get(
         raw.status.value if hasattr(raw.status, "value") else str(raw.status), OrderStatus.OTHER
     )
+    legs = [_map_order(leg) for leg in raw.legs] if getattr(raw, "legs", None) else None
+    symbol = raw.symbol or (legs[0].symbol if legs else "")
+    side = _SIDE_FROM_ALPACA.get(raw.side, Side.BUY) if raw.side is not None else Side.BUY
+    order_type = (
+        OrderType(raw.type.value if hasattr(raw.type, "value") else str(raw.type))
+        if raw.type is not None
+        else OrderType.LIMIT
+    )
     return Order(
         order_id=str(raw.id),
-        symbol=raw.symbol,
+        symbol=symbol,
         qty=float(raw.qty),
-        side=_SIDE_FROM_ALPACA.get(raw.side, Side.BUY),
-        order_type=OrderType(raw.type.value if hasattr(raw.type, "value") else str(raw.type)),
+        side=side,
+        order_type=order_type,
         status=status,
         filled_qty=float(raw.filled_qty or 0),
         filled_avg_price=float(raw.filled_avg_price) if raw.filled_avg_price else None,
         submitted_at=raw.submitted_at,
         filled_at=raw.filled_at,
+        legs=legs,
     )
 
 
@@ -315,6 +340,29 @@ class AlpacaAdapter(BrokerAdapter):
         # Not retried: resubmitting a failed order risks a duplicate fill.
         # execution/ decides whether/how to retry based on order + account state.
         request = _build_alpaca_order_request(order)
+        raw = await self._call(self._trading_client.submit_order, request)
+        return _map_order(raw)
+
+    async def submit_multi_leg_order(self, order: MultiLegOrderRequest) -> Order:
+        # Not retried, same reasoning as submit_order. Combo orders fill all
+        # legs atomically as a unit and only support a net limit price on
+        # Alpaca — no market-order combo, to avoid an unpredictable net fill
+        # price across legs.
+        request = LimitOrderRequest(
+            qty=order.qty,
+            time_in_force=_TIF_TO_ALPACA[order.time_in_force],
+            order_class=AlpacaOrderClass.MLEG,
+            limit_price=order.limit_price,
+            legs=[
+                OptionLegRequest(
+                    symbol=leg.symbol,
+                    ratio_qty=leg.ratio_qty,
+                    side=_SIDE_TO_ALPACA[leg.side],
+                    position_intent=_POSITION_INTENT_TO_ALPACA[leg.position_intent],
+                )
+                for leg in order.legs
+            ],
+        )
         raw = await self._call(self._trading_client.submit_order, request)
         return _map_order(raw)
 

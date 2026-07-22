@@ -5,6 +5,7 @@ from .models import (
     Account,
     ActiveSymbol,
     Bar,
+    MultiLegOrderRequest,
     Order,
     OrderRequest,
     OrderStatus,
@@ -54,6 +55,9 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     async def submit_order(self, order: OrderRequest) -> Order: ...
+
+    @abstractmethod
+    async def submit_multi_leg_order(self, order: MultiLegOrderRequest) -> Order: ...
 
     @abstractmethod
     async def cancel_order(self, order_id: str) -> None: ...
