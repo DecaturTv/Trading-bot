@@ -13,6 +13,10 @@ dependencies = [
     "scikit-learn>=1.4",
     "xgboost>=2.0",
     "mlflow>=2.14",
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "apscheduler>=3.10",
+    "python-multipart>=0.0.9",
 ]
 
 [project.optional-dependencies]
@@ -30,4 +34,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["config*", "utils*", "broker*", "data*", "indicators*", "scanner*", "options*", "decision_engine*", "risk*", "execution*", "trade_management*", "alerts*", "backtesting*", "ml*"]
+include = ["config*", "utils*", "broker*", "data*", "indicators*", "scanner*", "options*", "decision_engine*", "risk*", "execution*", "trade_management*", "alerts*", "backtesting*", "ml*", "dashboard*"]

@@ -63,6 +63,28 @@ class Settings(BaseSettings):
     # ML tracking (local file-based SQLite store — no tracking server needed)
     mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
 
+    # Trade management — confirmed project rules (see project memory), not
+    # engineering defaults: -50% stop, +100% scale-out, 20% trailing
+    # pullback thereafter, force-close 2 trading days before expiry.
+    stop_loss_pct: float = 0.50
+    profit_target_pct: float = 1.00
+    scale_out_fraction: float = 0.50
+    trailing_stop_pct: float = 0.20
+    min_trading_days_before_expiry: int = 2
+
+    # Option selection for the live entry loop
+    option_target_delta: float = 0.40
+    option_target_dte: int = 45
+
+    # Autonomous trading loop
+    autonomous_trading_enabled: bool = True
+    scan_interval_seconds: int = 900
+    position_check_interval_seconds: int = 120
+
+    # Dashboard — required for any request to succeed (fail-closed: no
+    # token configured means no access, not open access)
+    dashboard_auth_token: str | None = None
+
     @model_validator(mode="after")
     def _enforce_live_trading_gate(self) -> "Settings":
         if self.trading_mode == "live" and not self.live_risk_ack:
@@ -90,4 +112,39 @@ class Settings(BaseSettings):
     def _validate_loss_limit_pct(cls, v: float) -> float:
         if not 0 < v <= 1:
             raise ValueError("loss limit percentages must be in (0, 1]")
+        return v
+
+    @field_validator("stop_loss_pct", "profit_target_pct", "trailing_stop_pct")
+    @classmethod
+    def _validate_positive_pct(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("must be positive")
+        return v
+
+    @field_validator("scale_out_fraction")
+    @classmethod
+    def _validate_scale_out_fraction(cls, v: float) -> float:
+        if not 0 < v <= 1:
+            raise ValueError("scale_out_fraction must be in (0, 1]")
+        return v
+
+    @field_validator("min_trading_days_before_expiry")
+    @classmethod
+    def _validate_min_dte(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("min_trading_days_before_expiry must be >= 0")
+        return v
+
+    @field_validator("option_target_delta")
+    @classmethod
+    def _validate_target_delta(cls, v: float) -> float:
+        if not 0 < v <= 1:
+            raise ValueError("option_target_delta must be in (0, 1]")
+        return v
+
+    @field_validator("option_target_dte", "scan_interval_seconds", "position_check_interval_seconds")
+    @classmethod
+    def _validate_positive_int(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("must be positive")
         return v

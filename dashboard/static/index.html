@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Trading Bot Dashboard</title>
+<style>
+  body { font-family: -apple-system, sans-serif; background: #111; color: #eee; margin: 0; padding: 1.5rem; }
+  h1 { font-size: 1.2rem; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; margin-top: 1rem; }
+  .card { background: #1b1b1b; border: 1px solid #333; border-radius: 8px; padding: 1rem; }
+  .card h2 { margin: 0 0 0.5rem; font-size: 0.9rem; color: #999; text-transform: uppercase; letter-spacing: 0.05em; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.85rem; }
+  td, th { text-align: left; padding: 0.25rem 0.4rem; border-bottom: 1px solid #2a2a2a; }
+  .halted { color: #ff5c5c; font-weight: bold; }
+  .running { color: #4caf50; font-weight: bold; }
+  button { background: #2a2a2a; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 0.4rem 0.8rem; cursor: pointer; }
+  button:hover { background: #333; }
+  #log { max-height: 220px; overflow-y: auto; font-size: 0.8rem; }
+  #log div { padding: 0.15rem 0; border-bottom: 1px dotted #2a2a2a; }
+  #tokenBar { margin-bottom: 1rem; }
+  input[type=text] { background: #1b1b1b; color: #eee; border: 1px solid #444; border-radius: 4px; padding: 0.35rem; }
+</style>
+</head>
+<body>
+  <h1>Trading Bot Dashboard</h1>
+  <div id="tokenBar">
+    <label>Auth token: <input type="text" id="tokenInput" placeholder="paste dashboard token"></label>
+    <button id="saveToken">Save</button>
+    <span id="connStatus"></span>
+  </div>
+
+  <div class="grid">
+    <div class="card">
+      <h2>Account</h2>
+      <table id="accountTable"></table>
+    </div>
+
+    <div class="card">
+      <h2>Halt State</h2>
+      <p id="haltState">unknown</p>
+      <button id="haltBtn">Halt</button>
+      <button id="resumeBtn">Resume</button>
+    </div>
+
+    <div class="card">
+      <h2>Universe</h2>
+      <p id="universe"></p>
+    </div>
+
+    <div class="card">
+      <h2>Positions (broker)</h2>
+      <table id="positionsTable"></table>
+    </div>
+
+    <div class="card">
+      <h2>Tracked Positions</h2>
+      <table id="trackedTable"></table>
+    </div>
+
+    <div class="card">
+      <h2>Trade Outcomes</h2>
+      <div id="tradeStats"></div>
+    </div>
+  </div>
+
+  <div class="card" style="margin-top:1rem;">
+    <h2>Live Events</h2>
+    <div id="log"></div>
+  </div>
+
+<script>
+const REFRESH_MS = 10000;
+
+function getToken() { return localStorage.getItem("dashboard_token") || ""; }
+function setToken(t) { localStorage.setItem("dashboard_token", t); }
+
+document.getElementById("tokenInput").value = getToken();
+document.getElementById("saveToken").onclick = () => {
+  setToken(document.getElementById("tokenInput").value.trim());
+  refreshAll();
+  connectWs();
+};
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    ...opts,
+    headers: { ...(opts.headers || {}), "Authorization": "Bearer " + getToken(), "Content-Type": "application/json" },
+  });
+  if (!res.ok) throw new Error(path + " -> " + res.status);
+  return res.json();
+}
+
+function renderTable(el, rows, columns) {
+  if (!rows || rows.length === 0) { el.innerHTML = "<tr><td>none</td></tr>"; return; }
+  const head = "<tr>" + columns.map(c => `<th>${c}</th>`).join("") + "</tr>";
+  const body = rows.map(r => "<tr>" + columns.map(c => `<td>${r[c] ?? ""}</td>`).join("") + "</tr>").join("");
+  el.innerHTML = head + body;
+}
+
+async function refreshAll() {
+  try {
+    const account = await api("/api/account");
+    renderTable(document.getElementById("accountTable"),
+      [{ field: "equity", value: account.equity?.toFixed(2) },
+       { field: "cash", value: account.cash?.toFixed(2) },
+       { field: "buying_power", value: account.buying_power?.toFixed(2) }],
+      ["field", "value"]);
+
+    const halt = await api("/api/halt");
+    const haltEl = document.getElementById("haltState");
+    haltEl.textContent = halt.halted ? "HALTED" : "running";
+    haltEl.className = halt.halted ? "halted" : "running";
+
+    const universe = await api("/api/universe");
+    document.getElementById("universe").textContent = (universe.symbols || []).join(", ") || "(none)";
+
+    const positions = await api("/api/positions");
+    renderTable(document.getElementById("positionsTable"), positions, ["symbol", "qty", "side", "unrealized_pl"]);
+
+    const tracked = await api("/api/positions/tracked");
+    renderTable(document.getElementById("trackedTable"),
+      (tracked || []).map(t => ({ symbol: t.symbol, qty: t.state?.qty, scaled_out: t.state?.scaled_out })),
+      ["symbol", "qty", "scaled_out"]);
+
+    const outcomes = await api("/api/trade-outcomes");
+    const stats = outcomes.statistics;
+    document.getElementById("tradeStats").textContent = stats
+      ? `win_rate=${(stats.win_rate * 100).toFixed(1)}% avg_win=${stats.avg_win.toFixed(2)} avg_loss=${stats.avg_loss.toFixed(2)} n=${stats.sample_size}`
+      : "not enough history yet";
+  } catch (e) {
+    log("refresh error: " + e.message);
+  }
+}
+
+function log(msg) {
+  const el = document.getElementById("log");
+  const line = document.createElement("div");
+  line.textContent = new Date().toLocaleTimeString() + "  " + msg;
+  el.prepend(line);
+}
+
+document.getElementById("haltBtn").onclick = async () => {
+  await api("/api/halt", { method: "POST", body: JSON.stringify({ reason: "manual halt from dashboard" }) });
+  refreshAll();
+};
+document.getElementById("resumeBtn").onclick = async () => {
+  await api("/api/resume", { method: "POST", body: JSON.stringify({ reason: "manual resume from dashboard" }) });
+  refreshAll();
+};
+
+let ws;
+function connectWs() {
+  if (ws) ws.close();
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  ws = new WebSocket(`${proto}//${location.host}/ws?token=${encodeURIComponent(getToken())}`);
+  ws.onopen = () => { document.getElementById("connStatus").textContent = "connected"; };
+  ws.onclose = () => { document.getElementById("connStatus").textContent = "disconnected"; };
+  ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    log(JSON.stringify(data));
+    refreshAll();
+  };
+}
+
+refreshAll();
+connectWs();
+setInterval(refreshAll, REFRESH_MS);
+</script>
+</body>
+</html>

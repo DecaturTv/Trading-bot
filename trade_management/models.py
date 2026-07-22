@@ -1,5 +1,10 @@
 from dataclasses import dataclass
+from datetime import date
 from enum import Enum
+
+from broker.models import OptionRight, OrderSide
+from decision_engine.models import TradeDirection
+from options.models import StrategyType
 
 
 @dataclass(frozen=True)
@@ -36,6 +41,33 @@ class PositionState:
     entry_cost_per_unit: float  # net debit paid per unit, in dollars (100x multiplier, same scale as OptionStrategy.net_debit)
     scaled_out: bool = False
     peak_gain_pct: float = 0.0  # highest unrealized gain % observed since entry
+
+
+@dataclass(frozen=True)
+class PersistedLeg:
+    """A single leg's structural details, as needed to re-fetch quotes and
+    build a close order after a process restart (a fresh OptionContract
+    carries live bid/ask; this only needs to carry what identifies it)."""
+
+    symbol: str  # OCC option symbol
+    strike: float
+    expiration: date
+    right: OptionRight
+    side: OrderSide
+
+
+@dataclass(frozen=True)
+class OpenPositionRecord:
+    """The full persisted record of one open live position — PositionState
+    plus the leg/strategy detail needed to resume tracking it after a
+    restart, which PositionState alone doesn't carry."""
+
+    symbol: str  # underlying
+    strategy_type: StrategyType
+    direction: TradeDirection
+    entry_date: date
+    legs: list[PersistedLeg]
+    state: PositionState
 
 
 class ExitAction(str, Enum):

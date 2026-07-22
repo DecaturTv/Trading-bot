@@ -6,6 +6,7 @@ _INSERT_SQL = "INSERT INTO ml_trade_outcomes (symbol, closed_at, pnl) VALUES ($1
 
 _RECENT_PNLS_SQL = "SELECT pnl FROM ml_trade_outcomes ORDER BY closed_at DESC, id DESC LIMIT $1"
 _ALL_PNLS_SQL = "SELECT pnl FROM ml_trade_outcomes ORDER BY closed_at"
+_PNLS_SINCE_SQL = "SELECT pnl FROM ml_trade_outcomes WHERE closed_at >= $1 ORDER BY closed_at"
 
 
 class TradeOutcomeRepository:
@@ -22,4 +23,9 @@ class TradeOutcomeRepository:
                 records = await conn.fetch(_ALL_PNLS_SQL)
             else:
                 records = await conn.fetch(_RECENT_PNLS_SQL, limit)
+        return [r["pnl"] for r in records]
+
+    async def pnls_since(self, cutoff: datetime) -> list[float]:
+        async with self._pool.acquire() as conn:
+            records = await conn.fetch(_PNLS_SINCE_SQL, cutoff)
         return [r["pnl"] for r in records]

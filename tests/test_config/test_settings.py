@@ -55,6 +55,46 @@ def test_mlflow_tracking_uri_defaults_to_local_sqlite():
     assert settings.mlflow_tracking_uri == "sqlite:///mlruns/mlflow.db"
 
 
+def test_trade_management_defaults_match_confirmed_project_rules():
+    settings = Settings(_env_file=None)
+    assert settings.stop_loss_pct == pytest.approx(0.50)
+    assert settings.profit_target_pct == pytest.approx(1.00)
+    assert settings.scale_out_fraction == pytest.approx(0.50)
+    assert settings.trailing_stop_pct == pytest.approx(0.20)
+    assert settings.min_trading_days_before_expiry == 2
+
+
+def test_autonomous_trading_enabled_by_default():
+    settings = Settings(_env_file=None)
+    assert settings.autonomous_trading_enabled is True
+
+
+def test_dashboard_auth_token_unset_by_default():
+    settings = Settings(_env_file=None)
+    assert settings.dashboard_auth_token is None
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("stop_loss_pct", 0.0),
+        ("profit_target_pct", -0.1),
+        ("trailing_stop_pct", 0.0),
+        ("scale_out_fraction", 0.0),
+        ("scale_out_fraction", 1.5),
+        ("min_trading_days_before_expiry", -1),
+        ("option_target_delta", 0.0),
+        ("option_target_delta", 1.5),
+        ("option_target_dte", 0),
+        ("scan_interval_seconds", 0),
+        ("position_check_interval_seconds", -1),
+    ],
+)
+def test_rejects_invalid_trade_loop_settings(field, value):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
+
+
 def test_alert_channels_default_to_unconfigured():
     settings = Settings(_env_file=None)
     assert settings.discord_webhook_url is None

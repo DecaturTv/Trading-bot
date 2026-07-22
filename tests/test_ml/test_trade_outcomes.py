@@ -59,3 +59,16 @@ async def test_recent_pnls_returns_all_when_no_limit(pool):
 
     pnls = await repo.recent_pnls()
     assert sorted(pnls) == [-5.0, 10.0, 20.0]
+
+
+@pytest.mark.asyncio
+async def test_pnls_since_excludes_outcomes_before_cutoff(pool):
+    repo = TradeOutcomeRepository(pool)
+    base = datetime.now(timezone.utc).replace(microsecond=0)
+    await repo.record_outcome("AAPL", base - timedelta(days=2), -500.0)
+    await repo.record_outcome("AAPL", base - timedelta(hours=1), 50.0)
+    await repo.record_outcome("AAPL", base, 25.0)
+
+    pnls = await repo.pnls_since(base - timedelta(days=1))
+
+    assert sorted(pnls) == [25.0, 50.0]

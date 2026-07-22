@@ -3,6 +3,10 @@ import asyncpg
 _POSITION_STATE_TABLE_SQL = """
 CREATE TABLE IF NOT EXISTS trade_management_positions (
     symbol TEXT PRIMARY KEY,
+    strategy_type TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    entry_date DATE NOT NULL,
+    legs JSONB NOT NULL,
     qty INTEGER NOT NULL,
     entry_cost_per_unit DOUBLE PRECISION NOT NULL,
     scaled_out BOOLEAN NOT NULL DEFAULT FALSE,
