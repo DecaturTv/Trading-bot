@@ -93,8 +93,8 @@ class Settings(BaseSettings):
     # Forex — opt-in (requires OANDA credentials above); trades the same
     # asset-agnostic scan/decision engine used for equities, just fed FX
     # candles instead of stock bars. Stop-loss/take-profit are attached to
-    # the order and managed by OANDA itself, not polled locally.
-    forex_pairs: tuple[str, ...] = ("EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD")
+    # the order and managed by OANDA itself, not polled locally. Scans every
+    # tradeable pair OANDA offers, fetched fresh each cycle — not a fixed list.
     forex_confidence_threshold: int = 92
     forex_risk_pct_per_trade: float = 0.02
     forex_stop_atr_multiplier: float = 1.5
@@ -178,11 +178,4 @@ class Settings(BaseSettings):
     def _validate_positive_float(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("must be positive")
-        return v
-
-    @field_validator("forex_pairs")
-    @classmethod
-    def _validate_forex_pairs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
-        if not v:
-            raise ValueError("forex_pairs must not be empty")
         return v

@@ -47,6 +47,14 @@ class OandaAdapter:
         )
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
+    async def get_tradeable_pairs(self) -> list[str]:
+        """All spot currency pairs this account can trade — excludes OANDA's
+        CFD/metal instruments, which aren't forex."""
+        response = await self._client.get(f"/v3/accounts/{self._account_id}/instruments")
+        response.raise_for_status()
+        return [i["name"] for i in response.json()["instruments"] if i["type"] == "CURRENCY"]
+
+    @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def get_candles(self, pair: str, granularity: str = "H1", count: int = 100) -> list[Bar]:
         response = await self._client.get(
             f"/v3/instruments/{pair}/candles",

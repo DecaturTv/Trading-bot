@@ -32,6 +32,29 @@ async def test_get_account_maps_oanda_summary_to_account():
 
 
 @pytest.mark.asyncio
+async def test_get_tradeable_pairs_filters_to_currency_instruments():
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v3/accounts/acct-1/instruments"
+        return httpx.Response(
+            200,
+            json={
+                "instruments": [
+                    {"name": "EUR_USD", "type": "CURRENCY"},
+                    {"name": "XAU_USD", "type": "METAL"},
+                    {"name": "US30_USD", "type": "CFD"},
+                    {"name": "GBP_USD", "type": "CURRENCY"},
+                ]
+            },
+        )
+
+    adapter = make_adapter(handler)
+    pairs = await adapter.get_tradeable_pairs()
+
+    assert pairs == ["EUR_USD", "GBP_USD"]
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
 async def test_get_candles_maps_complete_candles_to_bars():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/v3/instruments/EUR_USD/candles"

@@ -102,7 +102,7 @@ async def test_entry_cycle_happy_path_opens_position():
 @pytest.mark.asyncio
 async def test_entry_cycle_continues_after_one_pair_raises():
     context = make_context()
-    context.settings.forex_pairs = ("EUR_USD", "GBP_USD")
+    context.forex_broker.get_tradeable_pairs.return_value = ["EUR_USD", "GBP_USD"]
 
     async def get_candles_side_effect(pair, *args, **kwargs):
         if pair == "EUR_USD":

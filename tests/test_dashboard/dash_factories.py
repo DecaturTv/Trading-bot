@@ -63,7 +63,6 @@ def make_context(**overrides) -> AppContext:
         daily_loss_limit_pct=0.05,
         weekly_loss_limit_pct=0.10,
         kelly_fraction=0.25,
-        forex_pairs=("EUR_USD",),
         forex_confidence_threshold=92,
         forex_risk_pct_per_trade=0.02,
         forex_stop_atr_multiplier=1.5,
@@ -98,6 +97,7 @@ def make_context(**overrides) -> AppContext:
     ctx.alert_manager = AsyncMock()
     ctx.progress_notifier = AsyncMock()
     ctx.forex_broker = AsyncMock()
+    ctx.forex_broker.get_tradeable_pairs.return_value = ["EUR_USD"]
     ctx.forex_position_repository = AsyncMock()
     ctx.forex_position_repository.get.return_value = None
     ctx.forex_position_repository.get_all.return_value = []

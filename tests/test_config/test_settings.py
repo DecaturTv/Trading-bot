@@ -112,7 +112,6 @@ def test_oanda_credentials_unset_by_default():
 
 def test_forex_defaults():
     settings = Settings(_env_file=None)
-    assert settings.forex_pairs == ("EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD")
     assert settings.forex_confidence_threshold == 92
     assert settings.forex_risk_pct_per_trade == pytest.approx(0.02)
     assert settings.forex_stop_atr_multiplier == pytest.approx(1.5)
@@ -132,7 +131,6 @@ def test_forex_defaults():
         ("forex_take_profit_r_multiple", -1.0),
         ("forex_scan_interval_seconds", 0),
         ("forex_position_check_interval_seconds", -1),
-        ("forex_pairs", ()),
     ],
 )
 def test_rejects_invalid_forex_settings(field, value):

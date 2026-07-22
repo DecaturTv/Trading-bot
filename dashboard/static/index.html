@@ -36,6 +36,11 @@
     </div>
 
     <div class="card">
+      <h2>Forex Account</h2>
+      <table id="forexAccountTable"></table>
+    </div>
+
+    <div class="card">
       <h2>Halt State</h2>
       <p id="haltState">unknown</p>
       <button id="haltBtn">Halt</button>
@@ -109,6 +114,15 @@ async function refreshAll() {
       [{ field: "equity", value: account.equity?.toFixed(2) },
        { field: "cash", value: account.cash?.toFixed(2) },
        { field: "buying_power", value: account.buying_power?.toFixed(2) }],
+      ["field", "value"]);
+
+    const forexAccount = await api("/api/forex/account");
+    renderTable(document.getElementById("forexAccountTable"),
+      forexAccount
+        ? [{ field: "equity", value: forexAccount.equity?.toFixed(2) },
+           { field: "cash", value: forexAccount.cash?.toFixed(2) },
+           { field: "buying_power", value: forexAccount.buying_power?.toFixed(2) }]
+        : [{ field: "status", value: "not configured" }],
       ["field", "value"]);
 
     const halt = await api("/api/halt");

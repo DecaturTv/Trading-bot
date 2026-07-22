@@ -29,18 +29,23 @@ async def _emit(on_event: EventCallback, event: dict) -> None:
 
 
 async def forex_entry_cycle(context: AppContext, now: datetime, on_event: EventCallback = None) -> None:
-    """Scans the configured FX pairs for new entries. Gated on the forex
-    broker being configured (opt-in), the 24/5 forex session, and the shared
-    halt state — same halt as the equities loop, so a loss-limit breach on
-    either side stops both."""
+    """Scans every tradeable currency pair OANDA offers for new entries (not
+    a fixed list — fetched fresh each cycle so newly-listed pairs are picked
+    up automatically). Gated on the forex broker being configured (opt-in),
+    the 24/5 forex session, and the shared halt state — same halt as the
+    equities loop, so a loss-limit breach on either side stops both."""
     if context.forex_broker is None:
         return
     if not is_forex_market_open(now):
+        logger.info("forex entry cycle skipped: market closed")
         return
     if await context.halt_manager.is_halted():
+        logger.info("forex entry cycle skipped: trading halted")
         return
 
-    for pair in context.settings.forex_pairs:
+    pairs = await context.forex_broker.get_tradeable_pairs()
+    logger.info("forex entry cycle: scanning %d pairs", len(pairs))
+    for pair in pairs:
         try:
             await _maybe_enter_forex(context, pair, now, on_event)
         except Exception:
@@ -117,9 +122,11 @@ async def forex_position_management_cycle(context: AppContext, now: datetime, on
     if context.forex_broker is None:
         return
     if not is_forex_market_open(now):
+        logger.info("forex position management cycle skipped: market closed")
         return
 
     tracked = await context.forex_position_repository.get_all()
+    logger.info("forex position management cycle: checking %d tracked positions", len(tracked))
     if not tracked:
         return
 
