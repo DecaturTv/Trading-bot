@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 from broker.models import Bar
+from indicators.candlesticks import detect_pattern
 from indicators.momentum import macd, rsi
 from indicators.trend import supertrend
 from indicators.volatility import atr
@@ -68,3 +69,14 @@ def gap_factor(scan_hits: Sequence[ScanHit], full_scale_gap_pct: float = 0.10) -
         return None
     gap_pct = hit.details.get("gap_pct", 0.0)
     return _clip(gap_pct / full_scale_gap_pct)
+
+
+def candlestick_factor(bars: Sequence[Bar]) -> float | None:
+    """Most recent candlestick reversal/continuation pattern (engulfing,
+    hammer/hanging-man/shooting-star/inverted-hammer, doji, morning/evening
+    star), signed by direction and scaled by how strongly the bars match the
+    textbook shape."""
+    pattern = detect_pattern(bars)
+    if pattern is None:
+        return None
+    return _clip(pattern.direction * pattern.strength)

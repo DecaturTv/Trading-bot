@@ -3,15 +3,16 @@ from collections.abc import Sequence
 from broker.models import Bar
 from scanner.models import ScanHit
 
-from .factors import gap_factor, macd_factor, momentum_factor, trend_factor, unusual_volume_factor
+from .factors import candlestick_factor, gap_factor, macd_factor, momentum_factor, trend_factor, unusual_volume_factor
 from .models import FactorScore, TradeDirection, TradeSignal
 
 DEFAULT_WEIGHTS = {
-    "momentum": 0.25,
-    "trend": 0.30,
-    "macd": 0.20,
+    "momentum": 0.20,
+    "trend": 0.25,
+    "macd": 0.15,
     "unusual_volume": 0.15,
     "gap": 0.10,
+    "candlestick": 0.15,
 }
 
 _FACTOR_FUNCTIONS = {
@@ -20,6 +21,7 @@ _FACTOR_FUNCTIONS = {
     "macd": lambda bars, scan_hits: macd_factor(bars),
     "unusual_volume": lambda bars, scan_hits: unusual_volume_factor(bars, scan_hits),
     "gap": lambda bars, scan_hits: gap_factor(scan_hits),
+    "candlestick": lambda bars, scan_hits: candlestick_factor(bars),
 }
 
 
