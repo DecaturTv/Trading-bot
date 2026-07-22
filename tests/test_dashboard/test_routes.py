@@ -1,4 +1,4 @@
-from dash_factories import make_account, make_context, make_position_record
+from dash_factories import make_account, make_context, make_forex_position, make_position_record
 from fastapi.testclient import TestClient
 
 from config.settings import Settings
@@ -76,6 +76,25 @@ def test_get_tracked_positions_serializes_nested_dataclasses():
     assert body[0]["symbol"] == "AAPL"
     assert body[0]["state"]["qty"] == 3
     assert body[0]["legs"][0]["right"] == "call"
+
+
+def test_get_forex_positions_returns_tracked_positions():
+    context = make_context()
+    context.forex_position_repository.get_all.return_value = [make_forex_position(pair="EUR_USD")]
+    with make_client(context) as client:
+        response = client.get("/api/forex/positions", headers=AUTH)
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["pair"] == "EUR_USD"
+
+
+def test_get_forex_positions_empty_when_forex_not_configured():
+    context = make_context()
+    context.forex_position_repository = None
+    with make_client(context) as client:
+        response = client.get("/api/forex/positions", headers=AUTH)
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 def test_get_trade_outcomes_includes_statistics():

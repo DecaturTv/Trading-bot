@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 from broker.models import Account, Bar, OptionRight, OrderSide
 from dashboard.context import AppContext
 from decision_engine.models import TradeDirection
+from forex.models import OpenForexPosition
 from options.models import StrategyType
 from trade_management.models import OpenPositionRecord, PersistedLeg, PositionState, TradeManagementConfig
 
@@ -39,6 +40,16 @@ def make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, scaled_out=Fals
     )
 
 
+def make_forex_position(
+    pair="EUR_USD", side=OrderSide.BUY, units=1000, entry_price=1.1000, stop_loss_price=1.0950,
+    take_profit_price=1.1100, oanda_trade_id="123",
+):
+    return OpenForexPosition(
+        pair=pair, side=side, units=units, entry_price=entry_price, stop_loss_price=stop_loss_price,
+        take_profit_price=take_profit_price, oanda_trade_id=oanda_trade_id, opened_at=datetime.now(timezone.utc),
+    )
+
+
 def make_context(**overrides) -> AppContext:
     """A fully-mocked AppContext — every field is an AsyncMock/MagicMock by
     default so tests only need to configure the specific calls they care
@@ -52,6 +63,11 @@ def make_context(**overrides) -> AppContext:
         daily_loss_limit_pct=0.05,
         weekly_loss_limit_pct=0.10,
         kelly_fraction=0.25,
+        forex_pairs=("EUR_USD",),
+        forex_confidence_threshold=92,
+        forex_risk_pct_per_trade=0.02,
+        forex_stop_atr_multiplier=1.5,
+        forex_take_profit_r_multiple=2.0,
     )
     ctx.db = AsyncMock()
     ctx.broker = AsyncMock()
@@ -80,6 +96,11 @@ def make_context(**overrides) -> AppContext:
     ctx.trade_outcome_repository.pnls_since.return_value = []
     ctx.feature_store_repository = AsyncMock()
     ctx.alert_manager = AsyncMock()
+    ctx.progress_notifier = AsyncMock()
+    ctx.forex_broker = AsyncMock()
+    ctx.forex_position_repository = AsyncMock()
+    ctx.forex_position_repository.get.return_value = None
+    ctx.forex_position_repository.get_all.return_value = []
 
     for key, value in overrides.items():
         setattr(ctx, key, value)

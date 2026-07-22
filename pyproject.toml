@@ -34,4 +34,4 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["config*", "utils*", "broker*", "data*", "indicators*", "scanner*", "options*", "decision_engine*", "risk*", "execution*", "trade_management*", "alerts*", "backtesting*", "ml*", "dashboard*"]
+include = ["config*", "utils*", "broker*", "data*", "indicators*", "scanner*", "options*", "decision_engine*", "risk*", "execution*", "trade_management*", "alerts*", "backtesting*", "ml*", "dashboard*", "forex*"]

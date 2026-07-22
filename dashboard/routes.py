@@ -4,7 +4,7 @@ from fastapi import APIRouter, Request
 
 from risk.statistics import compute_trade_statistics
 
-from .context import AppContext
+from .context import AppContext, get_effective_account
 
 router = APIRouter(prefix="/api")
 
@@ -20,7 +20,7 @@ async def health():
 
 @router.get("/account")
 async def get_account(request: Request):
-    return await _context(request).broker.get_account()
+    return await get_effective_account(_context(request))
 
 
 @router.get("/positions")
@@ -31,6 +31,12 @@ async def get_positions(request: Request):
 @router.get("/positions/tracked")
 async def get_tracked_positions(request: Request):
     return await _context(request).position_repository.get_all()
+
+
+@router.get("/forex/positions")
+async def get_forex_positions(request: Request):
+    repo = _context(request).forex_position_repository
+    return await repo.get_all() if repo is not None else []
 
 
 @router.get("/halt")

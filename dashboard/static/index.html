@@ -58,6 +58,11 @@
     </div>
 
     <div class="card">
+      <h2>Forex Positions</h2>
+      <table id="forexTable"></table>
+    </div>
+
+    <div class="card">
       <h2>Trade Outcomes</h2>
       <div id="tradeStats"></div>
     </div>
@@ -121,6 +126,11 @@ async function refreshAll() {
     renderTable(document.getElementById("trackedTable"),
       (tracked || []).map(t => ({ symbol: t.symbol, qty: t.state?.qty, scaled_out: t.state?.scaled_out })),
       ["symbol", "qty", "scaled_out"]);
+
+    const forexPositions = await api("/api/forex/positions");
+    renderTable(document.getElementById("forexTable"),
+      (forexPositions || []).map(p => ({ pair: p.pair, side: p.side, units: p.units, entry: p.entry_price?.toFixed(5) })),
+      ["pair", "side", "units", "entry"]);
 
     const outcomes = await api("/api/trade-outcomes");
     const stats = outcomes.statistics;

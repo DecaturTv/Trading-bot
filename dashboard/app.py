@@ -7,6 +7,7 @@ from fastapi.staticfiles import StaticFiles
 
 from config import get_settings
 from config.settings import Settings
+from utils.logging import configure_logging
 
 from .auth import require_auth
 from .context import AppContext, build_context, close_context
@@ -24,6 +25,7 @@ def create_app(settings: Settings | None = None, context_factory: ContextFactory
     real build_context, which needs a live broker connection and Postgres."""
     settings = settings or get_settings()
     factory = context_factory or build_context
+    configure_logging()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -36,6 +38,8 @@ def create_app(settings: Settings | None = None, context_factory: ContextFactory
             scheduler = build_scheduler(context, on_event=app.state.connection_manager.broadcast)
             scheduler.start()
         app.state.scheduler = scheduler
+
+        print("Time to Get This Money - Future Tyler", flush=True)
 
         yield
 

@@ -19,7 +19,7 @@ from trade_management.models import ExitAction, OpenPositionRecord, PersistedLeg
 from trade_management.pnl import current_value_per_unit as compute_current_value_per_unit
 from utils.time import is_equity_market_open
 
-from .context import AppContext
+from .context import AppContext, get_effective_account
 
 logger = logging.getLogger(__name__)
 
@@ -40,11 +40,14 @@ async def entry_cycle(context: AppContext, now: datetime, on_event: EventCallbac
     up front so a closed market or an active halt skips the whole cycle
     without touching the broker."""
     if not is_equity_market_open(now):
+        logger.info("entry cycle skipped: market closed")
         return
     if await context.halt_manager.is_halted():
+        logger.info("entry cycle skipped: trading halted")
         return
 
     symbols = await context.universe_manager.get_universe(now)
+    logger.info("entry cycle: scanning %d symbols", len(symbols))
     for symbol in symbols:
         try:
             await _maybe_enter(context, symbol, now, on_event)
@@ -86,7 +89,7 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         logger.exception("failed to build strategy for %s", symbol)
         return
 
-    account = await context.broker.get_account()
+    account = await get_effective_account(context)
     positions = await context.broker.get_positions()
     check = await context.pre_trade_checker.evaluate(account, positions, symbol, strategy.net_debit)
     if not check.passed:
@@ -130,9 +133,11 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
 
 async def position_management_cycle(context: AppContext, now: datetime, on_event: EventCallback = None) -> None:
     if not is_equity_market_open(now):
+        logger.info("position management cycle skipped: market closed")
         return
 
     records = await context.position_repository.get_all()
+    logger.info("position management cycle: checking %d tracked positions", len(records))
     for record in records:
         try:
             await _manage_position(context, record, now, on_event)
@@ -208,7 +213,7 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
     if await context.halt_manager.is_halted():
         return
 
-    account = await context.broker.get_account()
+    account = await get_effective_account(context)
     if account.equity <= 0:
         return
 
@@ -230,3 +235,28 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
                 timestamp=now,
             )
         )
+
+
+async def progress_report_cycle(context: AppContext, now: datetime) -> None:
+    """Hourly Discord status ping — separate from the severity-gated
+    AlertManager channels since this is a routine update, not an event alert.
+    No-ops if Discord isn't configured or the market is closed."""
+    if context.progress_notifier is None:
+        return
+    if not is_equity_market_open(now):
+        return
+
+    account = await get_effective_account(context)
+    positions = await context.position_repository.get_all()
+    halted = await context.halt_manager.is_halted()
+
+    day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
+    daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start))
+
+    message = (
+        f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
+        f"open_positions={len(positions)} status={'HALTED' if halted else 'running'}"
+    )
+    await context.progress_notifier.send(
+        Alert(title="Trading bot progress", message=message, severity=Severity.INFO, timestamp=now)
+    )

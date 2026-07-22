@@ -81,9 +81,26 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 900
     position_check_interval_seconds: int = 120
 
+    # Hourly Discord progress report — opt-in, only runs if a Discord webhook
+    # is configured; separate from the severity-gated AlertManager channels
+    # since it's a status ping, not an event alert.
+    progress_report_interval_seconds: int = 3600
+
     # Dashboard — required for any request to succeed (fail-closed: no
     # token configured means no access, not open access)
     dashboard_auth_token: str | None = None
+
+    # Forex — opt-in (requires OANDA credentials above); trades the same
+    # asset-agnostic scan/decision engine used for equities, just fed FX
+    # candles instead of stock bars. Stop-loss/take-profit are attached to
+    # the order and managed by OANDA itself, not polled locally.
+    forex_pairs: tuple[str, ...] = ("EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD")
+    forex_confidence_threshold: int = 92
+    forex_risk_pct_per_trade: float = 0.02
+    forex_stop_atr_multiplier: float = 1.5
+    forex_take_profit_r_multiple: float = 2.0
+    forex_scan_interval_seconds: int = 300
+    forex_position_check_interval_seconds: int = 120
 
     @model_validator(mode="after")
     def _enforce_live_trading_gate(self) -> "Settings":
@@ -93,18 +110,18 @@ class Settings(BaseSettings):
             )
         return self
 
-    @field_validator("confidence_threshold")
+    @field_validator("confidence_threshold", "forex_confidence_threshold")
     @classmethod
     def _validate_confidence_threshold(cls, v: int) -> int:
         if not 0 <= v <= 100:
             raise ValueError("confidence_threshold must be between 0 and 100")
         return v
 
-    @field_validator("kelly_fraction")
+    @field_validator("kelly_fraction", "forex_risk_pct_per_trade")
     @classmethod
-    def _validate_kelly_fraction(cls, v: float) -> float:
+    def _validate_unit_fraction(cls, v: float) -> float:
         if not 0 < v <= 1:
-            raise ValueError("kelly_fraction must be in (0, 1]")
+            raise ValueError("must be in (0, 1]")
         return v
 
     @field_validator("daily_loss_limit_pct", "weekly_loss_limit_pct")
@@ -142,9 +159,30 @@ class Settings(BaseSettings):
             raise ValueError("option_target_delta must be in (0, 1]")
         return v
 
-    @field_validator("option_target_dte", "scan_interval_seconds", "position_check_interval_seconds")
+    @field_validator(
+        "option_target_dte",
+        "scan_interval_seconds",
+        "position_check_interval_seconds",
+        "progress_report_interval_seconds",
+        "forex_scan_interval_seconds",
+        "forex_position_check_interval_seconds",
+    )
     @classmethod
     def _validate_positive_int(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("must be positive")
+        return v
+
+    @field_validator("forex_stop_atr_multiplier", "forex_take_profit_r_multiple")
+    @classmethod
+    def _validate_positive_float(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("must be positive")
+        return v
+
+    @field_validator("forex_pairs")
+    @classmethod
+    def _validate_forex_pairs(cls, v: tuple[str, ...]) -> tuple[str, ...]:
+        if not v:
+            raise ValueError("forex_pairs must not be empty")
         return v

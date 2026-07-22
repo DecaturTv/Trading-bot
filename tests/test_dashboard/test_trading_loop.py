@@ -1,10 +1,10 @@
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from dash_factories import make_bars, make_context, make_position_record
+from dash_factories import make_account, make_bars, make_context, make_position_record
 
 from broker.models import OptionContract, OptionGreeks, OptionRight
-from dashboard.trading_loop import entry_cycle, loss_limit_check_cycle, position_management_cycle
+from dashboard.trading_loop import entry_cycle, loss_limit_check_cycle, position_management_cycle, progress_report_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 from risk.kelly import KellyResult
 
@@ -283,3 +283,46 @@ async def test_loss_limit_check_sends_critical_alert_when_triggered():
     context.alert_manager.send.assert_awaited_once()
     alert = context.alert_manager.send.call_args.args[0]
     assert alert.severity.value == "critical"
+
+
+@pytest.mark.asyncio
+async def test_progress_report_noop_when_notifier_not_configured():
+    context = make_context()
+    context.progress_notifier = None
+    await progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+    context.broker.get_account.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_progress_report_noop_when_market_closed():
+    context = make_context()
+    await progress_report_cycle(context, MARKET_CLOSED_SATURDAY)
+    context.progress_notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_progress_report_sends_status_message():
+    context = make_context()
+    context.broker.get_account.return_value = make_account(equity=12345.67)
+    context.position_repository.get_all.return_value = [make_position_record(symbol="AAPL")]
+    context.halt_manager.is_halted.return_value = False
+    context.trade_outcome_repository.pnls_since.return_value = [50.0, -20.0]
+
+    await progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.progress_notifier.send.assert_awaited_once()
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "12,345.67" in alert.message
+    assert "open_positions=1" in alert.message
+    assert "status=running" in alert.message
+
+
+@pytest.mark.asyncio
+async def test_progress_report_reports_halted_status():
+    context = make_context()
+    context.halt_manager.is_halted.return_value = True
+
+    await progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "status=HALTED" in alert.message

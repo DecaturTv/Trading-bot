@@ -102,3 +102,39 @@ def test_alert_channels_default_to_unconfigured():
     assert settings.twilio_account_sid is None
     assert settings.smtp_host is None
     assert settings.smtp_port == 587
+
+
+def test_oanda_credentials_unset_by_default():
+    settings = Settings(_env_file=None)
+    assert settings.oanda_api_key is None
+    assert settings.oanda_account_id is None
+
+
+def test_forex_defaults():
+    settings = Settings(_env_file=None)
+    assert settings.forex_pairs == ("EUR_USD", "GBP_USD", "USD_JPY", "AUD_USD", "USD_CAD", "USD_CHF", "NZD_USD")
+    assert settings.forex_confidence_threshold == 92
+    assert settings.forex_risk_pct_per_trade == pytest.approx(0.02)
+    assert settings.forex_stop_atr_multiplier == pytest.approx(1.5)
+    assert settings.forex_take_profit_r_multiple == pytest.approx(2.0)
+    assert settings.forex_scan_interval_seconds == 300
+    assert settings.forex_position_check_interval_seconds == 120
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("forex_confidence_threshold", -1),
+        ("forex_confidence_threshold", 101),
+        ("forex_risk_pct_per_trade", 0.0),
+        ("forex_risk_pct_per_trade", 1.5),
+        ("forex_stop_atr_multiplier", 0.0),
+        ("forex_take_profit_r_multiple", -1.0),
+        ("forex_scan_interval_seconds", 0),
+        ("forex_position_check_interval_seconds", -1),
+        ("forex_pairs", ()),
+    ],
+)
+def test_rejects_invalid_forex_settings(field, value):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})

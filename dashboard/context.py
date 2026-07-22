@@ -1,9 +1,12 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
+from alerts.base import Notifier
+from alerts.discord_notifier import DiscordNotifier
 from alerts.factory import build_alert_manager
 from alerts.manager import AlertManager
 from broker.alpaca_adapter import AlpacaAdapter
 from broker.base import BrokerAdapter
+from broker.models import Account
 from config.settings import Settings
 from data.bars_repository import BarsRepository
 from data.database import Database
@@ -11,6 +14,9 @@ from data.ingestion import BarIngestionService
 from data.schema import apply_schema
 from decision_engine.scoring import WeightedFactorModel
 from execution.executor import OrderExecutor
+from forex.oanda_adapter import OandaAdapter
+from forex.position_repository import ForexPositionRepository
+from forex.position_schema import apply_forex_position_schema
 from ml.feature_store_repository import FeatureStoreRepository
 from ml.feature_store_schema import apply_feature_store_schema
 from ml.trade_outcome_repository import TradeOutcomeRepository
@@ -48,6 +54,9 @@ class AppContext:
     trade_outcome_repository: TradeOutcomeRepository
     feature_store_repository: FeatureStoreRepository
     alert_manager: AlertManager
+    progress_notifier: Notifier | None
+    forex_broker: OandaAdapter | None
+    forex_position_repository: ForexPositionRepository | None
 
 
 async def build_context(settings: Settings, broker: BrokerAdapter | None = None) -> AppContext:
@@ -63,6 +72,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     await apply_position_state_schema(pool)
     await apply_feature_store_schema(pool)
     await apply_trade_outcome_schema(pool)
+    await apply_forex_position_schema(pool)
 
     broker = broker or AlpacaAdapter.from_settings(settings)
 
@@ -93,6 +103,16 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
 
     alert_manager = build_alert_manager(settings)
 
+    progress_notifier: Notifier | None = None
+    if settings.discord_webhook_url:
+        progress_notifier = DiscordNotifier(settings.discord_webhook_url)
+
+    forex_broker: OandaAdapter | None = None
+    forex_position_repository: ForexPositionRepository | None = None
+    if settings.oanda_api_key and settings.oanda_account_id:
+        forex_broker = OandaAdapter(settings.oanda_api_key, settings.oanda_account_id, live=settings.trading_mode == "live")
+        forex_position_repository = ForexPositionRepository(pool)
+
     return AppContext(
         settings=settings,
         db=db,
@@ -111,8 +131,35 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         trade_outcome_repository=trade_outcome_repository,
         feature_store_repository=feature_store_repository,
         alert_manager=alert_manager,
+        progress_notifier=progress_notifier,
+        forex_broker=forex_broker,
+        forex_position_repository=forex_position_repository,
     )
 
 
 async def close_context(context: AppContext) -> None:
+    if context.forex_broker is not None:
+        await context.forex_broker.aclose()
     await context.db.disconnect()
+
+
+async def get_effective_account(context: AppContext) -> Account:
+    """Wraps broker.get_account() — while paper trading, equity is treated as
+    settings.account_start_balance rather than Alpaca's real (unrealistically
+    large) paper-account equity, so position sizing, exposure/loss-limit
+    checks, and the dashboard all reflect the bankroll actually being
+    simulated. Live trading uses the broker's real equity unmodified."""
+    account = await context.broker.get_account()
+    if context.settings.trading_mode == "paper":
+        return replace(account, equity=context.settings.account_start_balance)
+    return account
+
+
+async def get_effective_forex_account(context: AppContext) -> Account:
+    """Same paper-equity override as get_effective_account, applied to the
+    OANDA account instead — one simulated bankroll figure regardless of
+    which broker a given cycle is trading through."""
+    account = await context.forex_broker.get_account()
+    if context.settings.trading_mode == "paper":
+        return replace(account, equity=context.settings.account_start_balance)
+    return account
