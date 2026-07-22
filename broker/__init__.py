@@ -3,6 +3,7 @@ from .base import BrokerAdapter
 from .exceptions import BrokerError
 from .models import (
     Account,
+    ActiveSymbol,
     Bar,
     Order,
     OrderRequest,
@@ -19,6 +20,7 @@ __all__ = [
     "BrokerAdapter",
     "BrokerError",
     "Account",
+    "ActiveSymbol",
     "Bar",
     "Order",
     "OrderRequest",

@@ -3,8 +3,9 @@ import re
 from datetime import datetime
 
 from alpaca.common.exceptions import APIError
+from alpaca.data.historical.screener import ScreenerClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
-from alpaca.data.requests import StockBarsRequest, StockLatestQuoteRequest
+from alpaca.data.requests import MostActivesRequest, StockBarsRequest, StockLatestQuoteRequest
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
@@ -26,6 +27,7 @@ from .base import BrokerAdapter
 from .exceptions import BrokerError
 from .models import (
     Account,
+    ActiveSymbol,
     Bar,
     Order,
     OrderRequest,
@@ -140,6 +142,10 @@ def _map_order(raw) -> Order:
     )
 
 
+def _map_active_symbol(raw) -> ActiveSymbol:
+    return ActiveSymbol(symbol=raw.symbol, volume=float(raw.volume))
+
+
 def _build_alpaca_order_request(order: OrderRequest):
     kwargs = dict(
         symbol=order.symbol,
@@ -166,9 +172,11 @@ class AlpacaAdapter(BrokerAdapter):
         paper: bool = True,
         trading_client: TradingClient | None = None,
         data_client: StockHistoricalDataClient | None = None,
+        screener_client: ScreenerClient | None = None,
     ):
         self._trading_client = trading_client or TradingClient(api_key, secret_key, paper=paper)
         self._data_client = data_client or StockHistoricalDataClient(api_key, secret_key)
+        self._screener_client = screener_client or ScreenerClient(api_key, secret_key)
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
 
     @classmethod
@@ -222,6 +230,12 @@ class AlpacaAdapter(BrokerAdapter):
         )
         raw = await self._call(self._data_client.get_stock_bars, request)
         return [_map_bar(symbol, b) for b in raw[symbol]]
+
+    @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
+    async def get_most_active_symbols(self, top: int = 20) -> list[ActiveSymbol]:
+        request = MostActivesRequest(top=top, by="volume")
+        raw = await self._call(self._screener_client.get_most_actives, request)
+        return [_map_active_symbol(a) for a in raw.most_actives]
 
     async def submit_order(self, order: OrderRequest) -> Order:
         # Not retried: resubmitting a failed order risks a duplicate fill.

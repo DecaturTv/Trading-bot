@@ -85,6 +85,12 @@ class OrderRequest:
 
 
 @dataclass(frozen=True)
+class ActiveSymbol:
+    symbol: str
+    volume: float
+
+
+@dataclass(frozen=True)
 class Order:
     order_id: str
     symbol: str

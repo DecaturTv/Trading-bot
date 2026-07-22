@@ -1,7 +1,7 @@
 from abc import ABC, abstractmethod
 from datetime import datetime
 
-from .models import Account, Bar, Order, OrderRequest, OrderStatus, Position, Quote
+from .models import Account, ActiveSymbol, Bar, Order, OrderRequest, OrderStatus, Position, Quote
 
 
 class BrokerAdapter(ABC):
@@ -30,6 +30,9 @@ class BrokerAdapter(ABC):
     async def get_bars(
         self, symbol: str, timeframe: str, start: datetime, end: datetime
     ) -> list[Bar]: ...
+
+    @abstractmethod
+    async def get_most_active_symbols(self, top: int = 20) -> list[ActiveSymbol]: ...
 
     @abstractmethod
     async def submit_order(self, order: OrderRequest) -> Order: ...

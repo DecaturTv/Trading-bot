@@ -20,7 +20,9 @@ from broker.models import TimeInForce as TIF
 def make_adapter():
     trading_client = MagicMock()
     data_client = MagicMock()
-    adapter = AlpacaAdapter(trading_client=trading_client, data_client=data_client)
+    adapter = AlpacaAdapter(
+        trading_client=trading_client, data_client=data_client, screener_client=MagicMock()
+    )
     return adapter, trading_client, data_client
 
 
@@ -190,6 +192,27 @@ async def test_get_account_retries_then_succeeds(monkeypatch):
 
     assert account.account_id == "acct-1"
     assert trading_client.get_account.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_most_active_symbols_maps_fields():
+    screener_client = MagicMock()
+    adapter = AlpacaAdapter(
+        trading_client=MagicMock(), data_client=MagicMock(), screener_client=screener_client
+    )
+    screener_client.get_most_actives.return_value = SimpleNamespace(
+        most_actives=[
+            SimpleNamespace(symbol="AAPL", volume=1_000_000.0, trade_count=5000.0),
+            SimpleNamespace(symbol="TSLA", volume=800_000.0, trade_count=4000.0),
+        ],
+        last_updated=datetime.now(timezone.utc),
+    )
+
+    result = await adapter.get_most_active_symbols(top=20)
+
+    assert [a.symbol for a in result] == ["AAPL", "TSLA"]
+    assert result[0].volume == 1_000_000.0
+    screener_client.get_most_actives.assert_called_once()
 
 
 @pytest.mark.asyncio
