@@ -4,6 +4,7 @@ from .halt_schema import apply_halt_schema
 from .kelly import KellyResult, KellySizer, TradeStatistics
 from .pre_trade import CheckResult, PreTradeCheckResult, PreTradeChecker
 from .sizing import contracts_for_budget, position_budget_dollars
+from .statistics import compute_trade_statistics
 
 __all__ = [
     "HaltManager",
@@ -17,4 +18,5 @@ __all__ = [
     "PreTradeChecker",
     "contracts_for_budget",
     "position_budget_dollars",
+    "compute_trade_statistics",
 ]

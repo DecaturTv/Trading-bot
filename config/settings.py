@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     alert_email_from: str | None = None
     alert_email_to: str | None = None
 
+    # ML tracking (local file-based SQLite store — no tracking server needed)
+    mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
+
     @model_validator(mode="after")
     def _enforce_live_trading_gate(self) -> "Settings":
         if self.trading_mode == "live" and not self.live_risk_ack:

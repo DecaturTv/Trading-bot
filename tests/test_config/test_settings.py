@@ -50,6 +50,11 @@ def test_allowed_option_strategies_excludes_collateral_heavy_strategies():
     assert "long_call" in settings.allowed_option_strategies
 
 
+def test_mlflow_tracking_uri_defaults_to_local_sqlite():
+    settings = Settings(_env_file=None)
+    assert settings.mlflow_tracking_uri == "sqlite:///mlruns/mlflow.db"
+
+
 def test_alert_channels_default_to_unconfigured():
     settings = Settings(_env_file=None)
     assert settings.discord_webhook_url is None
