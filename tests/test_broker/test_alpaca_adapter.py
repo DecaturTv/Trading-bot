@@ -21,7 +21,10 @@ def make_adapter():
     trading_client = MagicMock()
     data_client = MagicMock()
     adapter = AlpacaAdapter(
-        trading_client=trading_client, data_client=data_client, screener_client=MagicMock()
+        trading_client=trading_client,
+        data_client=data_client,
+        screener_client=MagicMock(),
+        option_data_client=MagicMock(),
     )
     return adapter, trading_client, data_client
 
@@ -198,7 +201,10 @@ async def test_get_account_retries_then_succeeds(monkeypatch):
 async def test_get_most_active_symbols_maps_fields():
     screener_client = MagicMock()
     adapter = AlpacaAdapter(
-        trading_client=MagicMock(), data_client=MagicMock(), screener_client=screener_client
+        trading_client=MagicMock(),
+        data_client=MagicMock(),
+        screener_client=screener_client,
+        option_data_client=MagicMock(),
     )
     screener_client.get_most_actives.return_value = SimpleNamespace(
         most_actives=[
@@ -213,6 +219,100 @@ async def test_get_most_active_symbols_maps_fields():
     assert [a.symbol for a in result] == ["AAPL", "TSLA"]
     assert result[0].volume == 1_000_000.0
     screener_client.get_most_actives.assert_called_once()
+
+
+def make_alpaca_contract(symbol, strike, expiration, right):
+    return SimpleNamespace(
+        symbol=symbol,
+        underlying_symbol="AAPL",
+        strike_price=strike,
+        expiration_date=expiration,
+        type=right,
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_option_chain_merges_contracts_with_snapshots():
+    from datetime import date
+
+    from alpaca.trading.enums import ContractType
+
+    trading_client = MagicMock()
+    option_data_client = MagicMock()
+    adapter = AlpacaAdapter(
+        trading_client=trading_client,
+        data_client=MagicMock(),
+        screener_client=MagicMock(),
+        option_data_client=option_data_client,
+    )
+    expiration = date(2026, 8, 21)
+
+    trading_client.get_option_contracts.return_value = SimpleNamespace(
+        option_contracts=[
+            make_alpaca_contract("AAPL260821C00150000", 150.0, expiration, ContractType.CALL),
+            make_alpaca_contract("AAPL260821P00150000", 150.0, expiration, ContractType.PUT),
+        ],
+        next_page_token=None,
+    )
+    option_data_client.get_option_chain.return_value = {
+        "AAPL260821C00150000": SimpleNamespace(
+            latest_quote=SimpleNamespace(bid_price=5.0, ask_price=5.2),
+            latest_trade=SimpleNamespace(price=5.1),
+            implied_volatility=0.35,
+            greeks=SimpleNamespace(delta=0.5, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+        # no snapshot for the put contract, to exercise the "missing pricing data" path
+    }
+
+    result = await adapter.get_option_chain("AAPL", expiration_gte=expiration, expiration_lte=expiration)
+
+    assert len(result) == 2
+    call = next(c for c in result if c.symbol == "AAPL260821C00150000")
+    put = next(c for c in result if c.symbol == "AAPL260821P00150000")
+
+    assert call.right.value == "call"
+    assert call.bid == 5.0
+    assert call.ask == 5.2
+    assert call.implied_volatility == 0.35
+    assert call.greeks.delta == 0.5
+
+    assert put.right.value == "put"
+    assert put.bid is None
+    assert put.greeks is None
+
+
+@pytest.mark.asyncio
+async def test_get_option_chain_paginates_contract_fetch():
+    from datetime import date
+
+    from alpaca.trading.enums import ContractType
+
+    trading_client = MagicMock()
+    option_data_client = MagicMock()
+    adapter = AlpacaAdapter(
+        trading_client=trading_client,
+        data_client=MagicMock(),
+        screener_client=MagicMock(),
+        option_data_client=option_data_client,
+    )
+    expiration = date(2026, 8, 21)
+
+    trading_client.get_option_contracts.side_effect = [
+        SimpleNamespace(
+            option_contracts=[make_alpaca_contract("A1", 100.0, expiration, ContractType.CALL)],
+            next_page_token="page-2",
+        ),
+        SimpleNamespace(
+            option_contracts=[make_alpaca_contract("A2", 105.0, expiration, ContractType.CALL)],
+            next_page_token=None,
+        ),
+    ]
+    option_data_client.get_option_chain.return_value = {}
+
+    result = await adapter.get_option_chain("AAPL")
+
+    assert {c.symbol for c in result} == {"A1", "A2"}
+    assert trading_client.get_option_contracts.call_count == 2
 
 
 @pytest.mark.asyncio

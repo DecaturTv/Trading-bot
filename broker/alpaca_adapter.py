@@ -1,18 +1,27 @@
 import asyncio
 import re
-from datetime import datetime
+from datetime import date, datetime
 
 from alpaca.common.exceptions import APIError
+from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.screener import ScreenerClient
 from alpaca.data.historical.stock import StockHistoricalDataClient
-from alpaca.data.requests import MostActivesRequest, StockBarsRequest, StockLatestQuoteRequest
+from alpaca.data.requests import (
+    MostActivesRequest,
+    OptionChainRequest,
+    StockBarsRequest,
+    StockLatestQuoteRequest,
+)
 from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 from alpaca.trading.client import TradingClient
+from alpaca.trading.enums import AssetStatus
+from alpaca.trading.enums import ContractType as AlpacaContractType
 from alpaca.trading.enums import OrderSide as AlpacaOrderSide
 from alpaca.trading.enums import PositionSide
 from alpaca.trading.enums import QueryOrderStatus
 from alpaca.trading.enums import TimeInForce as AlpacaTimeInForce
 from alpaca.trading.requests import (
+    GetOptionContractsRequest,
     GetOrdersRequest,
     LimitOrderRequest,
     MarketOrderRequest,
@@ -29,6 +38,9 @@ from .models import (
     Account,
     ActiveSymbol,
     Bar,
+    OptionContract,
+    OptionGreeks,
+    OptionRight,
     Order,
     OrderRequest,
     OrderStatus,
@@ -146,6 +158,27 @@ def _map_active_symbol(raw) -> ActiveSymbol:
     return ActiveSymbol(symbol=raw.symbol, volume=float(raw.volume))
 
 
+def _map_option_greeks(raw) -> OptionGreeks:
+    return OptionGreeks(delta=raw.delta, gamma=raw.gamma, theta=raw.theta, vega=raw.vega, rho=raw.rho)
+
+
+def _map_option_contract(contract, snapshot) -> OptionContract:
+    quote = snapshot.latest_quote if snapshot else None
+    trade = snapshot.latest_trade if snapshot else None
+    return OptionContract(
+        symbol=contract.symbol,
+        underlying_symbol=contract.underlying_symbol,
+        strike=float(contract.strike_price),
+        expiration=contract.expiration_date,
+        right=OptionRight.CALL if contract.type == AlpacaContractType.CALL else OptionRight.PUT,
+        bid=quote.bid_price if quote else None,
+        ask=quote.ask_price if quote else None,
+        last_price=trade.price if trade else None,
+        implied_volatility=snapshot.implied_volatility if snapshot else None,
+        greeks=_map_option_greeks(snapshot.greeks) if snapshot and snapshot.greeks else None,
+    )
+
+
 def _build_alpaca_order_request(order: OrderRequest):
     kwargs = dict(
         symbol=order.symbol,
@@ -173,10 +206,12 @@ class AlpacaAdapter(BrokerAdapter):
         trading_client: TradingClient | None = None,
         data_client: StockHistoricalDataClient | None = None,
         screener_client: ScreenerClient | None = None,
+        option_data_client: OptionHistoricalDataClient | None = None,
     ):
         self._trading_client = trading_client or TradingClient(api_key, secret_key, paper=paper)
         self._data_client = data_client or StockHistoricalDataClient(api_key, secret_key)
         self._screener_client = screener_client or ScreenerClient(api_key, secret_key)
+        self._option_data_client = option_data_client or OptionHistoricalDataClient(api_key, secret_key)
         self._breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0)
 
     @classmethod
@@ -236,6 +271,45 @@ class AlpacaAdapter(BrokerAdapter):
         request = MostActivesRequest(top=top, by="volume")
         raw = await self._call(self._screener_client.get_most_actives, request)
         return [_map_active_symbol(a) for a in raw.most_actives]
+
+    @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
+    async def get_option_chain(
+        self,
+        underlying_symbol: str,
+        expiration_gte: date | None = None,
+        expiration_lte: date | None = None,
+    ) -> list[OptionContract]:
+        # Alpaca splits option data across two endpoints: contract reference
+        # data (strike/expiration/type) from the trading API, and pricing/IV/
+        # greeks from the market data API — merge them by contract symbol.
+        contracts = await self._fetch_option_contracts(underlying_symbol, expiration_gte, expiration_lte)
+        chain_request = OptionChainRequest(
+            underlying_symbol=underlying_symbol,
+            expiration_date_gte=expiration_gte,
+            expiration_date_lte=expiration_lte,
+        )
+        snapshots = await self._call(self._option_data_client.get_option_chain, chain_request)
+        return [_map_option_contract(c, snapshots.get(c.symbol)) for c in contracts]
+
+    async def _fetch_option_contracts(
+        self, underlying_symbol: str, expiration_gte: date | None, expiration_lte: date | None
+    ):
+        contracts = []
+        page_token = None
+        for _ in range(20):  # safety cap: a single underlying's chain fits well within this
+            request = GetOptionContractsRequest(
+                underlying_symbols=[underlying_symbol],
+                status=AssetStatus.ACTIVE,
+                expiration_date_gte=expiration_gte,
+                expiration_date_lte=expiration_lte,
+                page_token=page_token,
+            )
+            response = await self._call(self._trading_client.get_option_contracts, request)
+            contracts.extend(response.option_contracts)
+            page_token = response.next_page_token
+            if not page_token:
+                break
+        return contracts
 
     async def submit_order(self, order: OrderRequest) -> Order:
         # Not retried: resubmitting a failed order risks a duplicate fill.

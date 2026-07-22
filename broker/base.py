@@ -1,7 +1,17 @@
 from abc import ABC, abstractmethod
-from datetime import datetime
+from datetime import date, datetime
 
-from .models import Account, ActiveSymbol, Bar, Order, OrderRequest, OrderStatus, Position, Quote
+from .models import (
+    Account,
+    ActiveSymbol,
+    Bar,
+    Order,
+    OrderRequest,
+    OrderStatus,
+    OptionContract,
+    Position,
+    Quote,
+)
 
 
 class BrokerAdapter(ABC):
@@ -33,6 +43,14 @@ class BrokerAdapter(ABC):
 
     @abstractmethod
     async def get_most_active_symbols(self, top: int = 20) -> list[ActiveSymbol]: ...
+
+    @abstractmethod
+    async def get_option_chain(
+        self,
+        underlying_symbol: str,
+        expiration_gte: date | None = None,
+        expiration_lte: date | None = None,
+    ) -> list[OptionContract]: ...
 
     @abstractmethod
     async def submit_order(self, order: OrderRequest) -> Order: ...

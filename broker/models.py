@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import date, datetime
 from enum import Enum
 
 
@@ -88,6 +88,34 @@ class OrderRequest:
 class ActiveSymbol:
     symbol: str
     volume: float
+
+
+class OptionRight(str, Enum):
+    CALL = "call"
+    PUT = "put"
+
+
+@dataclass(frozen=True)
+class OptionGreeks:
+    delta: float | None
+    gamma: float | None
+    theta: float | None
+    vega: float | None
+    rho: float | None
+
+
+@dataclass(frozen=True)
+class OptionContract:
+    symbol: str
+    underlying_symbol: str
+    strike: float
+    expiration: date
+    right: OptionRight
+    bid: float | None
+    ask: float | None
+    last_price: float | None
+    implied_volatility: float | None
+    greeks: OptionGreeks | None
 
 
 @dataclass(frozen=True)
