@@ -38,7 +38,7 @@ async def stock_entry_cycle(context: AppContext, now: datetime, on_event: EventC
     if not is_equity_market_open(now):
         logger.info("stock entry cycle skipped: market closed")
         return
-    if await context.halt_manager.is_halted():
+    if await context.halt_manager.is_halted("equities"):
         logger.info("stock entry cycle skipped: trading halted")
         return
 
@@ -80,7 +80,7 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
     if not check.passed:
         return
 
-    stats = await get_live_trade_statistics(context.trade_outcome_repository)
+    stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
     kelly_result = context.kelly_sizer.size(stats)
     budget = position_budget_dollars(account.equity, kelly_result)
     qty = contracts_for_budget(budget, entry_price)
@@ -145,7 +145,7 @@ async def _manage_stock_position(context: AppContext, record: OpenStockPositionR
     )
 
     pnl = (current_value - record.state.entry_cost_per_unit) * decision.qty_to_close
-    await context.trade_outcome_repository.record_outcome(record.symbol, now, pnl)
+    await context.trade_outcome_repository.record_outcome(record.symbol, now, pnl, asset_class="equities")
 
     remaining = record.state.qty - decision.qty_to_close
     if remaining <= 0:

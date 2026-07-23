@@ -57,7 +57,7 @@ async def entry_cycle(context: AppContext, now: datetime, on_event: EventCallbac
     if not is_equity_market_open(now):
         logger.info("entry cycle (%s) skipped: market closed", timeframe)
         return
-    if await context.halt_manager.is_halted():
+    if await context.halt_manager.is_halted("equities"):
         logger.info("entry cycle (%s) skipped: trading halted", timeframe)
         return
 
@@ -91,6 +91,21 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
     if not expirations:
         return
     expiration = select_expiration(expirations, context.settings.option_target_dte, now.date())
+
+    # select_expiration picks the closest available expiration to the target
+    # regardless of how close that is -- if the chain has nothing near
+    # option_target_dte, it can hand back something already at or past the
+    # force-close line, which would open and immediately EXPIRY_EXIT on the
+    # next position-management pass. Skip the entry instead of doing that
+    # round trip for nothing.
+    dte = trading_days_until(expiration, now.date())
+    if dte <= context.trade_management_config.min_trading_days_before_expiry:
+        logger.info(
+            "entry cycle (%s) skipped %s: nearest expiration %s is only %d trading days out (<= %d minimum)",
+            timeframe, symbol, expiration, dte, context.trade_management_config.min_trading_days_before_expiry,
+        )
+        return
+
     candidates = [c for c in chain if c.right is right and c.expiration == expiration]
 
     target_delta = context.settings.option_target_delta if right is OptionRight.CALL else -context.settings.option_target_delta
@@ -111,7 +126,7 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
     if not check.passed:
         return
 
-    stats = await get_live_trade_statistics(context.trade_outcome_repository)
+    stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
     kelly_result = context.kelly_sizer.size(stats)
     budget = position_budget_dollars(account.equity, kelly_result)
     qty = contracts_for_budget(budget, strategy.net_debit)
@@ -196,7 +211,7 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
         await context.broker.submit_order(close_request)
 
     pnl = (current_value - record.state.entry_cost_per_unit) * decision.qty_to_close
-    await context.trade_outcome_repository.record_outcome(record.symbol, now, pnl)
+    await context.trade_outcome_repository.record_outcome(record.symbol, now, pnl, asset_class="equities")
 
     remaining = record.state.qty - decision.qty_to_close
     if remaining <= 0:
@@ -231,7 +246,7 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
     anywhere), which slightly understates loss % since it already reflects
     the day's losses; a reasonable approximation, not exact.
     """
-    if await context.halt_manager.is_halted():
+    if await context.halt_manager.is_halted("equities"):
         return
 
     account = await get_effective_account(context)
@@ -241,16 +256,17 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     week_start = day_start - timedelta(days=now.weekday())
 
-    daily_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(day_start)) / account.equity
-    weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start)) / account.equity
+    daily_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="equities")) / account.equity
+    weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="equities")) / account.equity
 
     triggered = await context.halt_manager.check_and_halt_on_loss_limits(
-        daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now
+        daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,
+        scope="equities",
     )
     if triggered:
         await context.alert_manager.send(
             Alert(
-                title="Trading halted: loss limit breached",
+                title="Trading halted (equities): loss limit breached",
                 message=f"daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
                 severity=Severity.CRITICAL,
                 timestamp=now,
@@ -272,10 +288,10 @@ async def progress_report_cycle(context: AppContext, now: datetime) -> None:
     account = await get_effective_account(context)
     positions = await context.position_repository.get_all()
     stock_positions = await context.stock_position_repository.get_all()
-    halted = await context.halt_manager.is_halted()
+    halted = await context.halt_manager.is_halted("equities")
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
-    daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start))
+    daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="equities"))
 
     message = (
         f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "

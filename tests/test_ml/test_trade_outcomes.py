@@ -72,3 +72,46 @@ async def test_pnls_since_excludes_outcomes_before_cutoff(pool):
     pnls = await repo.pnls_since(base - timedelta(days=1))
 
     assert sorted(pnls) == [25.0, 50.0]
+
+
+@pytest.mark.asyncio
+async def test_pnls_since_filters_by_asset_class(pool):
+    repo = TradeOutcomeRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    await repo.record_outcome("AAPL", now, 100.0)  # default asset_class="equities"
+    await repo.record_outcome("EUR_USD", now, -50.0, asset_class="forex")
+
+    assert await repo.pnls_since(now - timedelta(hours=1), asset_class="equities") == [100.0]
+    assert await repo.pnls_since(now - timedelta(hours=1), asset_class="forex") == [-50.0]
+    assert sorted(await repo.pnls_since(now - timedelta(hours=1))) == [-50.0, 100.0]  # unfiltered pools both
+
+
+@pytest.mark.asyncio
+async def test_recent_pnls_filters_by_asset_class(pool):
+    repo = TradeOutcomeRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    await repo.record_outcome("AAPL", now, 100.0)
+    await repo.record_outcome("EUR_USD", now, -50.0, asset_class="forex")
+
+    assert await repo.recent_pnls(asset_class="equities") == [100.0]
+    assert await repo.recent_pnls(limit=10, asset_class="forex") == [-50.0]
+
+
+@pytest.mark.asyncio
+async def test_get_live_trade_statistics_scopes_to_asset_class(pool):
+    repo = TradeOutcomeRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    # equities: 2 wins, 1 small loss
+    await repo.record_outcome("AAPL", now, 100.0)
+    await repo.record_outcome("TSLA", now, 100.0)
+    await repo.record_outcome("NVDA", now, -10.0)
+    # forex: large losses that would drag win_rate/avg_loss down if pooled in
+    await repo.record_outcome("EUR_USD", now, -500.0, asset_class="forex")
+    await repo.record_outcome("USD_JPY", now, -500.0, asset_class="forex")
+
+    stats = await get_live_trade_statistics(repo, asset_class="equities")
+
+    assert stats is not None
+    assert stats.win_rate == pytest.approx(2 / 3)
+    assert stats.avg_loss == pytest.approx(10.0)  # not dragged toward the forex losses
+    assert stats.sample_size == 3

@@ -56,7 +56,10 @@ class PreTradeChecker:
         return PreTradeCheckResult(passed=all(c.passed for c in checks), checks=checks)
 
     async def _check_not_halted(self) -> CheckResult:
-        halted = await self._halt_manager.is_halted()
+        # Only used for the equities (options + direct stock) entry paths --
+        # forex checks halt_manager directly with scope="forex" instead of
+        # going through PreTradeChecker.
+        halted = await self._halt_manager.is_halted("equities")
         return CheckResult(name="not_halted", passed=not halted, reason="trading is halted" if halted else None)
 
     def _check_buying_power(self, account: Account, estimated_cost: float) -> CheckResult:

@@ -50,26 +50,35 @@ async def get_forex_account(request: Request):
     return await get_effective_forex_account(context) if context.forex_broker is not None else None
 
 
+_HALT_SCOPES = ("equities", "forex")
+
+
 @router.get("/halt")
 async def get_halt_status(request: Request):
-    halted = await _context(request).halt_manager.is_halted()
-    return {"halted": halted}
+    halt_manager = _context(request).halt_manager
+    return {scope: await halt_manager.is_halted(scope) for scope in _HALT_SCOPES}
 
 
 @router.post("/halt")
 async def halt_trading(request: Request, body: dict):
     context = _context(request)
     reason = body.get("reason", "manual halt via dashboard")
-    await context.halt_manager.halt(reason, datetime.now(timezone.utc))
-    return {"halted": True}
+    scopes = _HALT_SCOPES if body.get("scope", "all") == "all" else (body["scope"],)
+    now = datetime.now(timezone.utc)
+    for scope in scopes:
+        await context.halt_manager.halt(reason, now, scope)
+    return {scope: True for scope in scopes}
 
 
 @router.post("/resume")
 async def resume_trading(request: Request, body: dict):
     context = _context(request)
     reason = body.get("reason", "manual resume via dashboard")
-    await context.halt_manager.resume(reason, datetime.now(timezone.utc))
-    return {"halted": False}
+    scopes = _HALT_SCOPES if body.get("scope", "all") == "all" else (body["scope"],)
+    now = datetime.now(timezone.utc)
+    for scope in scopes:
+        await context.halt_manager.resume(reason, now, scope)
+    return {scope: False for scope in scopes}
 
 
 @router.get("/universe")

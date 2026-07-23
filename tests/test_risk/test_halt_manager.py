@@ -94,3 +94,28 @@ async def test_check_and_halt_on_loss_limits_ignores_gains(pool):
     )
 
     assert triggered is False
+
+
+@pytest.mark.asyncio
+async def test_scopes_are_independent(pool):
+    manager = HaltManager(HaltRepository(pool))
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    await manager.halt("options blew up", now, scope="equities")
+
+    assert await manager.is_halted("equities") is True
+    assert await manager.is_halted("forex") is False  # unaffected by the equities halt
+
+
+@pytest.mark.asyncio
+async def test_check_and_halt_on_loss_limits_only_halts_the_given_scope(pool):
+    manager = HaltManager(HaltRepository(pool))
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    triggered = await manager.check_and_halt_on_loss_limits(
+        daily_pnl_pct=-0.06, weekly_pnl_pct=-0.02, daily_limit_pct=0.05, weekly_limit_pct=0.10, now=now, scope="forex"
+    )
+
+    assert triggered is True
+    assert await manager.is_halted("forex") is True
+    assert await manager.is_halted("equities") is False

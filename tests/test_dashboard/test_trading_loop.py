@@ -107,6 +107,23 @@ async def test_entry_cycle_skips_when_no_matching_expiration():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_skips_when_nearest_expiration_is_too_close_to_dte_floor():
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    # MARKET_OPEN_TUESDAY is 2026-07-21; 2026-07-22 is 1 trading day out,
+    # <= min_trading_days_before_expiry=2 -- should skip rather than open a
+    # position that would immediately force-close on the next check.
+    near_expiration = date(2026, 7, 22)
+    context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)], expiration=near_expiration)
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.executor.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_skips_when_pre_trade_check_fails():
     context = make_context()
     context.universe_manager.get_universe.return_value = ["AAPL"]
@@ -286,6 +303,20 @@ async def test_loss_limit_check_noop_when_already_halted():
     context.halt_manager.is_halted.return_value = True
     await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
     context.broker.get_account.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_scopes_halt_and_pnls_to_equities():
+    context = make_context()
+    context.trade_outcome_repository.pnls_since.return_value = [-10.0]
+    context.halt_manager.check_and_halt_on_loss_limits.return_value = False
+
+    await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.halt_manager.is_halted.assert_awaited_once_with("equities")
+    for call in context.trade_outcome_repository.pnls_since.call_args_list:
+        assert call.kwargs["asset_class"] == "equities"
+    assert context.halt_manager.check_and_halt_on_loss_limits.call_args.kwargs["scope"] == "equities"
 
 
 @pytest.mark.asyncio

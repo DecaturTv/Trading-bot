@@ -4,7 +4,12 @@ import pytest
 from dash_factories import make_account, make_bars, make_context, make_forex_position
 
 from broker.models import OrderSide
-from dashboard.forex_loop import forex_entry_cycle, forex_position_management_cycle, forex_progress_report_cycle
+from dashboard.forex_loop import (
+    forex_entry_cycle,
+    forex_loss_limit_check_cycle,
+    forex_position_management_cycle,
+    forex_progress_report_cycle,
+)
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 
 MARKET_OPEN_TUESDAY = datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)
@@ -162,7 +167,9 @@ async def test_position_management_reconciles_closed_position():
     events = []
     await forex_position_management_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
 
-    context.trade_outcome_repository.record_outcome.assert_awaited_once_with("EUR_USD", MARKET_OPEN_TUESDAY, 42.5)
+    context.trade_outcome_repository.record_outcome.assert_awaited_once_with(
+        "EUR_USD", MARKET_OPEN_TUESDAY, 42.5, asset_class="forex"
+    )
     context.forex_position_repository.delete.assert_awaited_once_with("EUR_USD")
     context.alert_manager.send.assert_awaited_once()
     assert events[0]["type"] == "forex_position_closed"
@@ -240,3 +247,61 @@ async def test_progress_report_reports_halted_status():
 
     alert = context.progress_notifier.send.call_args.args[0]
     assert "status=HALTED" in alert.message
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_noop_when_forex_broker_not_configured():
+    context = make_context()
+    context.forex_broker = None
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+    context.halt_manager.is_halted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_noop_when_already_halted():
+    context = make_context()
+    context.halt_manager.is_halted.return_value = True
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+    context.forex_broker.get_account.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_scopes_halt_and_pnls_to_forex():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+    context.trade_outcome_repository.pnls_since.return_value = [-10.0]
+    context.halt_manager.check_and_halt_on_loss_limits.return_value = False
+
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.halt_manager.is_halted.assert_awaited_once_with("forex")
+    for call in context.trade_outcome_repository.pnls_since.call_args_list:
+        assert call.kwargs["asset_class"] == "forex"
+    assert context.halt_manager.check_and_halt_on_loss_limits.call_args.kwargs["scope"] == "forex"
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_does_not_halt_within_limits():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+    context.trade_outcome_repository.pnls_since.return_value = [-10.0]
+    context.halt_manager.check_and_halt_on_loss_limits.return_value = False
+
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.alert_manager.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_sends_critical_alert_when_triggered():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+    context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
+    context.halt_manager.check_and_halt_on_loss_limits.return_value = True
+
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.alert_manager.send.assert_awaited_once()
+    alert = context.alert_manager.send.call_args.args[0]
+    assert alert.severity.value == "critical"
+    assert "forex" in alert.title.lower()

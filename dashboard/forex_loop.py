@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Awaitable, Callable
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from alerts.models import Alert, Severity
 from broker.models import OrderSide
@@ -32,14 +32,15 @@ async def forex_entry_cycle(context: AppContext, now: datetime, on_event: EventC
     """Scans every tradeable currency pair OANDA offers for new entries (not
     a fixed list — fetched fresh each cycle so newly-listed pairs are picked
     up automatically). Gated on the forex broker being configured (opt-in),
-    the 24/5 forex session, and the shared halt state — same halt as the
-    equities loop, so a loss-limit breach on either side stops both."""
+    the 24/5 forex session, and forex's own halt state — scoped separately
+    from the equities halt (see forex_loss_limit_check_cycle) so a loss-limit
+    breach on one account doesn't stop the other."""
     if context.forex_broker is None:
         return
     if not is_forex_market_open(now):
         logger.info("forex entry cycle skipped: market closed")
         return
-    if await context.halt_manager.is_halted():
+    if await context.halt_manager.is_halted("forex"):
         logger.info("forex entry cycle skipped: trading halted")
         return
 
@@ -145,7 +146,7 @@ async def _reconcile_forex_position(
         return  # still open
 
     pnl = await context.forex_broker.get_trade_realized_pnl(position.oanda_trade_id)
-    await context.trade_outcome_repository.record_outcome(position.pair, now, pnl)
+    await context.trade_outcome_repository.record_outcome(position.pair, now, pnl, asset_class="forex")
     await context.forex_position_repository.delete(position.pair)
 
     severity = Severity.WARNING if pnl < 0 else Severity.INFO
@@ -153,6 +154,43 @@ async def _reconcile_forex_position(
         Alert(title=f"Closed {position.pair}", message=f"pnl={pnl:.2f}", severity=severity, timestamp=now)
     )
     await _emit(on_event, {"type": "forex_position_closed", "pair": position.pair, "pnl": pnl})
+
+
+async def forex_loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
+    """Forex's own daily/weekly loss-limit circuit breaker, independent of
+    the equities one (see trading_loop.loss_limit_check_cycle) -- separately
+    scoped halt state and OANDA-only pnl history, so a bad day in options
+    doesn't stop forex and vice versa. Same daily_loss_limit_pct/
+    weekly_loss_limit_pct policy, applied against OANDA's own account
+    equity rather than Alpaca's."""
+    if context.forex_broker is None:
+        return
+    if await context.halt_manager.is_halted("forex"):
+        return
+
+    account = await get_effective_forex_account(context)
+    if account.equity <= 0:
+        return
+
+    day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
+    week_start = day_start - timedelta(days=now.weekday())
+
+    daily_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="forex")) / account.equity
+    weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="forex")) / account.equity
+
+    triggered = await context.halt_manager.check_and_halt_on_loss_limits(
+        daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,
+        scope="forex",
+    )
+    if triggered:
+        await context.alert_manager.send(
+            Alert(
+                title="Trading halted (forex): loss limit breached",
+                message=f"daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
+                severity=Severity.CRITICAL,
+                timestamp=now,
+            )
+        )
 
 
 async def forex_progress_report_cycle(context: AppContext, now: datetime) -> None:
@@ -167,10 +205,10 @@ async def forex_progress_report_cycle(context: AppContext, now: datetime) -> Non
 
     account = await get_effective_forex_account(context)
     positions = await context.forex_position_repository.get_all()
-    halted = await context.halt_manager.is_halted()
+    halted = await context.halt_manager.is_halted("forex")
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
-    daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start))
+    daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="forex"))
 
     message = (
         f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
