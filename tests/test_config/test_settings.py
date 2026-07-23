@@ -8,7 +8,7 @@ def test_defaults_are_paper_mode():
     settings = Settings(_env_file=None)
     assert settings.trading_mode == "paper"
     assert settings.live_risk_ack is False
-    assert settings.confidence_threshold == 92
+    assert settings.confidence_threshold == 90
     assert settings.kelly_fraction == 0.25
 
 

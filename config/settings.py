@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     account_start_balance: float = 500.0
 
     # Risk defaults
-    confidence_threshold: int = 92
+    confidence_threshold: int = 90
     kelly_fraction: float = 0.25
     daily_loss_limit_pct: float = 0.05
     weekly_loss_limit_pct: float = 0.10
@@ -80,6 +80,14 @@ class Settings(BaseSettings):
     autonomous_trading_enabled: bool = True
     scan_interval_seconds: int = 900
     position_check_interval_seconds: int = 120
+
+    # Intraday entry cycles — run alongside the daily one (see build_scheduler),
+    # each on its own timeframe/interval, so a symbol can signal off a faster
+    # setup instead of waiting for a daily close. Interval matches each
+    # timeframe's own bar duration: no point rescanning 1h bars every 5min.
+    intraday_5m_scan_interval_seconds: int = 300
+    intraday_15m_scan_interval_seconds: int = 900
+    intraday_1h_scan_interval_seconds: int = 3600
 
     # Discord progress report — opt-in, only runs if a Discord webhook is
     # configured; separate from the severity-gated AlertManager channels
@@ -167,6 +175,9 @@ class Settings(BaseSettings):
         "progress_report_interval_seconds",
         "forex_scan_interval_seconds",
         "forex_position_check_interval_seconds",
+        "intraday_5m_scan_interval_seconds",
+        "intraday_15m_scan_interval_seconds",
+        "intraday_1h_scan_interval_seconds",
     )
     @classmethod
     def _validate_positive_int(cls, v: int) -> int:

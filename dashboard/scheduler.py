@@ -20,6 +20,15 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     async def _entry_job():
         await entry_cycle(context, datetime.now(timezone.utc), on_event)
 
+    async def _entry_job_5m():
+        await entry_cycle(context, datetime.now(timezone.utc), on_event, timeframe="5Min")
+
+    async def _entry_job_15m():
+        await entry_cycle(context, datetime.now(timezone.utc), on_event, timeframe="15Min")
+
+    async def _entry_job_1h():
+        await entry_cycle(context, datetime.now(timezone.utc), on_event, timeframe="1Hour")
+
     async def _position_job():
         await position_management_cycle(context, datetime.now(timezone.utc), on_event)
 
@@ -40,6 +49,18 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
 
     scheduler.add_job(
         _entry_job, IntervalTrigger(seconds=context.settings.scan_interval_seconds), id="entry_cycle",
+        max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        _entry_job_5m, IntervalTrigger(seconds=context.settings.intraday_5m_scan_interval_seconds), id="entry_cycle_5m",
+        max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        _entry_job_15m, IntervalTrigger(seconds=context.settings.intraday_15m_scan_interval_seconds), id="entry_cycle_15m",
+        max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        _entry_job_1h, IntervalTrigger(seconds=context.settings.intraday_1h_scan_interval_seconds), id="entry_cycle_1h",
         max_instances=1, coalesce=True,
     )
     scheduler.add_job(

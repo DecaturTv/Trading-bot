@@ -26,6 +26,8 @@ from risk.halt_repository import HaltRepository
 from risk.halt_schema import apply_halt_schema
 from risk.kelly import KellySizer
 from risk.pre_trade import PreTradeChecker
+from scanner.optionable_repository import OptionableSymbolsRepository
+from scanner.optionable_schema import apply_optionable_schema
 from scanner.service import ScannerService
 from scanner.universe import UniverseManager
 from scanner.universe_repository import UniverseRepository
@@ -68,6 +70,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
 
     await apply_schema(pool)
     await apply_universe_schema(pool)
+    await apply_optionable_schema(pool)
     await apply_halt_schema(pool)
     await apply_position_state_schema(pool)
     await apply_feature_store_schema(pool)
@@ -79,7 +82,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     bars_repository = BarsRepository(pool)
     ingestion_service = BarIngestionService(broker, bars_repository)
 
-    universe_manager = UniverseManager(broker, UniverseRepository(pool))
+    universe_manager = UniverseManager(broker, UniverseRepository(pool), OptionableSymbolsRepository(pool))
     scanner_service = ScannerService(broker, universe_manager)
 
     decision_model = WeightedFactorModel()

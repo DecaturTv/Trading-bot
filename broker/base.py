@@ -46,6 +46,9 @@ class BrokerAdapter(ABC):
     async def get_most_active_symbols(self, top: int = 20) -> list[ActiveSymbol]: ...
 
     @abstractmethod
+    async def get_optionable_symbols(self) -> list[str]: ...
+
+    @abstractmethod
     async def get_option_chain(
         self,
         underlying_symbol: str,

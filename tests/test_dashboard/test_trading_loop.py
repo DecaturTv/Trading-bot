@@ -153,6 +153,33 @@ async def test_entry_cycle_happy_path_opens_position():
     context.alert_manager.send.assert_awaited_once()
     assert events[0]["type"] == "position_opened"
     assert events[0]["symbol"] == "AAPL"
+    assert events[0]["timeframe"] == "1Day"
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_defaults_to_daily_timeframe():
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=5)  # too short -> harmless no-op
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.ingestion_service.ingest_incremental.assert_awaited_once_with("AAPL", "1Day", end=MARKET_OPEN_TUESDAY)
+    assert context.bars_repository.get_bars.call_args.args[1] == "1Day"
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_honors_intraday_timeframe():
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=5)  # too short -> harmless no-op
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY, timeframe="5Min")
+
+    context.ingestion_service.ingest_incremental.assert_awaited_once_with("AAPL", "5Min", end=MARKET_OPEN_TUESDAY)
+    assert context.bars_repository.get_bars.call_args.args[1] == "5Min"
+    lookback_start = context.bars_repository.get_bars.call_args.args[2]
+    assert (MARKET_OPEN_TUESDAY - lookback_start).days == 5
 
 
 @pytest.mark.asyncio

@@ -27,6 +27,17 @@ _BARS_LOOKBACK_DAYS = 90
 _MIN_BARS_FOR_SIGNAL = 30
 _SCAN_FUNCTIONS = (scan_unusual_volume, scan_gap, scan_momentum)
 
+# Calendar-day lookback per entry-cycle timeframe: enough bars for the
+# decision engine's factor warmup (~30 bars, see _MIN_BARS_FOR_SIGNAL) plus
+# buffer, scaled to each timeframe's bar density rather than reusing the
+# daily figure everywhere.
+_LOOKBACK_DAYS_BY_TIMEFRAME = {
+    "1Day": _BARS_LOOKBACK_DAYS,
+    "1Hour": 20,
+    "15Min": 10,
+    "5Min": 5,
+}
+
 EventCallback = Callable[[dict], Awaitable[None]] | None
 
 
@@ -35,32 +46,37 @@ async def _emit(on_event: EventCallback, event: dict) -> None:
         await on_event(event)
 
 
-async def entry_cycle(context: AppContext, now: datetime, on_event: EventCallback = None) -> None:
-    """Scans the universe for new entries. Market-hours-gated and halt-gated
-    up front so a closed market or an active halt skips the whole cycle
-    without touching the broker."""
+async def entry_cycle(context: AppContext, now: datetime, on_event: EventCallback = None, timeframe: str = "1Day") -> None:
+    """Scans the universe for new entries on the given bar timeframe.
+    Market-hours-gated and halt-gated up front so a closed market or an
+    active halt skips the whole cycle without touching the broker. Runs as
+    a separate scheduled cycle per timeframe (see scheduler.py) rather than
+    picking one — a symbol already holding a position (tracked per-symbol,
+    not per-timeframe) is skipped regardless of which timeframe would
+    otherwise signal on it."""
     if not is_equity_market_open(now):
-        logger.info("entry cycle skipped: market closed")
+        logger.info("entry cycle (%s) skipped: market closed", timeframe)
         return
     if await context.halt_manager.is_halted():
-        logger.info("entry cycle skipped: trading halted")
+        logger.info("entry cycle (%s) skipped: trading halted", timeframe)
         return
 
     symbols = await context.universe_manager.get_universe(now)
-    logger.info("entry cycle: scanning %d symbols", len(symbols))
+    logger.info("entry cycle (%s): scanning %d symbols", timeframe, len(symbols))
     for symbol in symbols:
         try:
-            await _maybe_enter(context, symbol, now, on_event)
+            await _maybe_enter(context, symbol, now, on_event, timeframe)
         except Exception:
-            logger.exception("entry cycle failed for %s", symbol)
+            logger.exception("entry cycle (%s) failed for %s", timeframe, symbol)
 
 
-async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event: EventCallback) -> None:
+async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event: EventCallback, timeframe: str = "1Day") -> None:
     if await context.position_repository.get(symbol) is not None:
         return  # already have an open position in this symbol
 
-    await context.ingestion_service.ingest_incremental(symbol, "1Day", end=now)
-    bars = await context.bars_repository.get_bars(symbol, "1Day", now - timedelta(days=_BARS_LOOKBACK_DAYS), now)
+    lookback_days = _LOOKBACK_DAYS_BY_TIMEFRAME.get(timeframe, _BARS_LOOKBACK_DAYS)
+    await context.ingestion_service.ingest_incremental(symbol, timeframe, end=now)
+    bars = await context.bars_repository.get_bars(symbol, timeframe, now - timedelta(days=lookback_days), now)
     if len(bars) < _MIN_BARS_FOR_SIGNAL:
         return
 
@@ -123,12 +139,17 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
     await context.alert_manager.send(
         Alert(
             title=f"Opened {strategy.strategy_type.value} on {symbol}",
-            message=f"qty={qty} entry_cost={strategy.net_debit:.2f} confidence={signal.confidence:.1f} order={result.order.order_id}",
+            message=(
+                f"qty={qty} entry_cost={strategy.net_debit:.2f} confidence={signal.confidence:.1f} "
+                f"timeframe={timeframe} order={result.order.order_id}"
+            ),
             severity=Severity.INFO,
             timestamp=now,
         )
     )
-    await _emit(on_event, {"type": "position_opened", "symbol": symbol, "qty": qty, "entry_cost": strategy.net_debit})
+    await _emit(
+        on_event, {"type": "position_opened", "symbol": symbol, "qty": qty, "entry_cost": strategy.net_debit, "timeframe": timeframe}
+    )
 
 
 async def position_management_cycle(context: AppContext, now: datetime, on_event: EventCallback = None) -> None:

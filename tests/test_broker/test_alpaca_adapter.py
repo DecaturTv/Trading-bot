@@ -311,6 +311,38 @@ async def test_get_most_active_symbols_maps_fields():
     screener_client.get_most_actives.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_get_optionable_symbols_dedupes_and_sorts():
+    adapter, trading_client, _ = make_adapter()
+    trading_client.get_option_contracts.return_value = SimpleNamespace(
+        option_contracts=[
+            SimpleNamespace(underlying_symbol="TSLA"),
+            SimpleNamespace(underlying_symbol="AAPL"),
+            SimpleNamespace(underlying_symbol="AAPL"),  # same underlying, different contract
+        ],
+        next_page_token=None,
+    )
+
+    result = await adapter.get_optionable_symbols()
+
+    assert result == ["AAPL", "TSLA"]
+    trading_client.get_option_contracts.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_get_optionable_symbols_paginates_across_the_whole_market():
+    adapter, trading_client, _ = make_adapter()
+    trading_client.get_option_contracts.side_effect = [
+        SimpleNamespace(option_contracts=[SimpleNamespace(underlying_symbol="AAPL")], next_page_token="page-2"),
+        SimpleNamespace(option_contracts=[SimpleNamespace(underlying_symbol="TSLA")], next_page_token=None),
+    ]
+
+    result = await adapter.get_optionable_symbols()
+
+    assert result == ["AAPL", "TSLA"]
+    assert trading_client.get_option_contracts.call_count == 2
+
+
 def make_alpaca_contract(symbol, strike, expiration, right):
     return SimpleNamespace(
         symbol=symbol,

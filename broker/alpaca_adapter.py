@@ -302,6 +302,26 @@ class AlpacaAdapter(BrokerAdapter):
         return [_map_active_symbol(a) for a in raw.most_actives]
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
+    async def get_optionable_symbols(self) -> list[str]:
+        """Every underlying with at least one active listed option contract —
+        paginated across the whole market (a few hundred pages' worth of
+        contracts collapse to a few hundred pages at limit=10000, observed
+        under a minute in practice), not filtered to a single underlying like
+        _fetch_option_contracts. Cached by callers (see scanner/universe.py)
+        since this is expensive to recompute every cycle even though it's
+        cheap in absolute terms."""
+        underlyings: set[str] = set()
+        page_token = None
+        for _ in range(200):  # safety cap: ~9 pages observed for the full market
+            request = GetOptionContractsRequest(status=AssetStatus.ACTIVE, limit=10000, page_token=page_token)
+            response = await self._call(self._trading_client.get_option_contracts, request)
+            underlyings.update(c.underlying_symbol for c in response.option_contracts)
+            page_token = response.next_page_token
+            if not page_token:
+                break
+        return sorted(underlyings)
+
+    @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
     async def get_option_chain(
         self,
         underlying_symbol: str,
