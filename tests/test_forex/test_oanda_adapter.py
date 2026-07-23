@@ -39,10 +39,10 @@ async def test_get_tradeable_pairs_filters_to_currency_instruments():
             200,
             json={
                 "instruments": [
-                    {"name": "EUR_USD", "type": "CURRENCY"},
-                    {"name": "XAU_USD", "type": "METAL"},
-                    {"name": "US30_USD", "type": "CFD"},
-                    {"name": "GBP_USD", "type": "CURRENCY"},
+                    {"name": "EUR_USD", "type": "CURRENCY", "displayPrecision": 5},
+                    {"name": "XAU_USD", "type": "METAL", "displayPrecision": 3},
+                    {"name": "US30_USD", "type": "CFD", "displayPrecision": 1},
+                    {"name": "GBP_USD", "type": "CURRENCY", "displayPrecision": 5},
                 ]
             },
         )
@@ -105,6 +105,44 @@ async def test_submit_market_order_returns_trade_id_on_fill():
     trade_id = await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_price=1.0950, take_profit_price=1.1100)
 
     assert trade_id == "999"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_market_order_uses_default_precision_when_pair_unknown():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["order"] = json.loads(request.content)["order"]
+        return httpx.Response(201, json={"orderFillTransaction": {"tradeOpened": {"tradeID": "1"}}})
+
+    adapter = make_adapter(handler)
+    await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_price=1.09495, take_profit_price=1.11005)
+
+    assert captured["order"]["stopLossOnFill"]["price"] == "1.09495"
+    assert captured["order"]["takeProfitOnFill"]["price"] == "1.11005"
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_market_order_uses_cached_precision_for_jpy_pairs():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/instruments"):
+            return httpx.Response(
+                200,
+                json={"instruments": [{"name": "EUR_JPY", "type": "CURRENCY", "displayPrecision": 3}]},
+            )
+        captured["order"] = json.loads(request.content)["order"]
+        return httpx.Response(201, json={"orderFillTransaction": {"tradeOpened": {"tradeID": "1"}}})
+
+    adapter = make_adapter(handler)
+    await adapter.get_tradeable_pairs()  # populates the precision cache
+    await adapter.submit_market_order("EUR_JPY", 1000, OrderSide.BUY, stop_loss_price=162.12345, take_profit_price=164.98765)
+
+    assert captured["order"]["stopLossOnFill"]["price"] == "162.123"
+    assert captured["order"]["takeProfitOnFill"]["price"] == "164.988"
     await adapter.aclose()
 
 

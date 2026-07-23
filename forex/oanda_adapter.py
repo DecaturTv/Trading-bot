@@ -29,6 +29,10 @@ class OandaAdapter:
         self._client = http_client or httpx.AsyncClient(
             base_url=base_url, headers={"Authorization": f"Bearer {api_key}"}, timeout=10.0
         )
+        # Price decimal precision varies per instrument (e.g. JPY-quoted pairs
+        # use 3 decimals, not 5) — populated from OANDA's own displayPrecision
+        # field so stop-loss/take-profit prices round the way OANDA expects.
+        self._price_precision: dict[str, int] = {}
 
     async def aclose(self) -> None:
         await self._client.aclose()
@@ -49,10 +53,15 @@ class OandaAdapter:
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def get_tradeable_pairs(self) -> list[str]:
         """All spot currency pairs this account can trade — excludes OANDA's
-        CFD/metal instruments, which aren't forex."""
+        CFD/metal instruments, which aren't forex. Also caches each pair's
+        price display precision as a side effect, for submit_market_order."""
         response = await self._client.get(f"/v3/accounts/{self._account_id}/instruments")
         response.raise_for_status()
-        return [i["name"] for i in response.json()["instruments"] if i["type"] == "CURRENCY"]
+        instruments = response.json()["instruments"]
+        self._price_precision.update(
+            {i["name"]: int(i["displayPrecision"]) for i in instruments if "displayPrecision" in i}
+        )
+        return [i["name"] for i in instruments if i["type"] == "CURRENCY"]
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def get_candles(self, pair: str, granularity: str = "H1", count: int = 100) -> list[Bar]:
@@ -91,14 +100,15 @@ class OandaAdapter:
         """units is always positive; side determines direction. Returns the
         opened trade's OANDA trade ID."""
         signed_units = units if side is OrderSide.BUY else -units
+        precision = self._price_precision.get(pair, 5)
         order = {
             "type": "MARKET",
             "instrument": pair,
             "units": str(signed_units),
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
-            "stopLossOnFill": {"price": f"{stop_loss_price:.5f}"},
-            "takeProfitOnFill": {"price": f"{take_profit_price:.5f}"},
+            "stopLossOnFill": {"price": f"{stop_loss_price:.{precision}f}"},
+            "takeProfitOnFill": {"price": f"{take_profit_price:.{precision}f}"},
         }
         response = await self._client.post(f"/v3/accounts/{self._account_id}/orders", json={"order": order})
         response.raise_for_status()
