@@ -13,12 +13,14 @@ def _clip(value: float, lo: float = -1.0, hi: float = 1.0) -> float:
 
 
 def momentum_factor(bars: Sequence[Bar], period: int = 14) -> float | None:
-    """RSI centered on 0: >50 bullish, <50 bearish, scaled to [-1, 1]."""
+    """RSI centered on 0: >50 bullish, <50 bearish, saturating to [-1, 1] at
+    the RSI 80/20 overbought/oversold levels rather than the 100/0 extremes,
+    which real market RSI rarely reaches."""
     closes = [b.close for b in bars]
     rsi_values = rsi(closes, period)
     if not rsi_values or rsi_values[-1] != rsi_values[-1]:  # NaN: still warming up
         return None
-    return _clip((rsi_values[-1] - 50) / 50)
+    return _clip((rsi_values[-1] - 50) / 30)
 
 
 def macd_factor(bars: Sequence[Bar]) -> float | None:
@@ -36,7 +38,9 @@ def macd_factor(bars: Sequence[Bar]) -> float | None:
 
 
 def trend_factor(bars: Sequence[Bar], period: int = 10, multiplier: float = 3.0) -> float | None:
-    """SuperTrend direction, scaled by how many ATRs price sits from the trend line."""
+    """SuperTrend direction, scaled by how many ATRs price sits from the trend
+    line, saturating to 1.0 at 0.5 ATR of separation — SuperTrend trails price
+    tightly, so a full ATR of separation is rare even in a strong trend."""
     result = supertrend(bars, period=period, multiplier=multiplier)
     if not result.direction or result.direction[-1] == 0:
         return None
@@ -48,7 +52,7 @@ def trend_factor(bars: Sequence[Bar], period: int = 10, multiplier: float = 3.0)
     if latest_atr != latest_atr or latest_atr == 0:
         magnitude = 1.0
     else:
-        magnitude = _clip(abs(close - trend_value) / latest_atr, 0.0, 1.0)
+        magnitude = _clip(abs(close - trend_value) / (0.5 * latest_atr), 0.0, 1.0)
     return direction * magnitude
 
 
