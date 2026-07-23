@@ -5,6 +5,7 @@ from datetime import date, datetime
 from alpaca.common.exceptions import APIError
 from alpaca.data.historical.option import OptionHistoricalDataClient
 from alpaca.data.historical.screener import ScreenerClient
+from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import (
     MostActivesRequest,
@@ -276,7 +277,9 @@ class AlpacaAdapter(BrokerAdapter):
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
     async def get_latest_quote(self, symbol: str) -> Quote:
-        request = StockLatestQuoteRequest(symbol_or_symbols=symbol)
+        # feed=IEX: the SIP feed 403s on recent data without Alpaca's paid
+        # Algo Trader Plus data plan; IEX is what the free/basic plan grants.
+        request = StockLatestQuoteRequest(symbol_or_symbols=symbol, feed=DataFeed.IEX)
         raw = await self._call(self._data_client.get_stock_latest_quote, request)
         return _map_quote(symbol, raw[symbol])
 
@@ -287,6 +290,7 @@ class AlpacaAdapter(BrokerAdapter):
             timeframe=_parse_timeframe(timeframe),
             start=start,
             end=end,
+            feed=DataFeed.IEX,
         )
         raw = await self._call(self._data_client.get_stock_bars, request)
         return [_map_bar(symbol, b) for b in raw[symbol]]
