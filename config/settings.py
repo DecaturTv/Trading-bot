@@ -73,8 +73,8 @@ class Settings(BaseSettings):
     min_trading_days_before_expiry: int = 2
 
     # Option selection for the live entry loop
-    option_target_delta: float = 0.40
-    option_target_dte: int = 45
+    option_target_delta: float = 0.15
+    option_target_dte: int = 25
 
     # Autonomous trading loop
     autonomous_trading_enabled: bool = True

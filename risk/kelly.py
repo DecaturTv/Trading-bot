@@ -27,7 +27,7 @@ class KellySizer:
         self,
         kelly_fraction: float = 0.25,
         min_sample_size: int = 30,
-        fallback_fraction: float = 0.02,
+        fallback_fraction: float = 0.45,
         max_position_fraction: float = 1.0,
     ):
         if not 0 < kelly_fraction <= 1:
@@ -43,8 +43,8 @@ class KellySizer:
 
     def size(self, stats: TradeStatistics | None) -> KellyResult:
         # Too little (or no) trade history: win-rate/win-loss estimates would
-        # be noise, not edge. Use a small fixed fraction instead of computing
-        # a "confident" Kelly size off an unreliable sample.
+        # be noise, not edge. Use a fixed fraction instead of computing a
+        # "confident" Kelly size off an unreliable sample.
         if stats is None or stats.sample_size < self._min_sample_size:
             return KellyResult(full_kelly_fraction=0.0, position_fraction=self._fallback_fraction, used_fallback=True)
 
