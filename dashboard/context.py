@@ -32,6 +32,8 @@ from scanner.service import ScannerService
 from scanner.universe import UniverseManager
 from scanner.universe_repository import UniverseRepository
 from scanner.universe_schema import apply_universe_schema
+from stocks.position_repository import StockPositionRepository
+from stocks.position_schema import apply_stock_position_schema
 from trade_management.models import TradeManagementConfig
 from trade_management.position_state_repository import PositionStateRepository
 from trade_management.position_state_schema import apply_position_state_schema
@@ -53,6 +55,7 @@ class AppContext:
     executor: OrderExecutor
     trade_management_config: TradeManagementConfig
     position_repository: PositionStateRepository
+    stock_position_repository: StockPositionRepository
     trade_outcome_repository: TradeOutcomeRepository
     feature_store_repository: FeatureStoreRepository
     alert_manager: AlertManager
@@ -76,6 +79,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     await apply_feature_store_schema(pool)
     await apply_trade_outcome_schema(pool)
     await apply_forex_position_schema(pool)
+    await apply_stock_position_schema(pool)
 
     broker = broker or AlpacaAdapter.from_settings(settings)
 
@@ -101,6 +105,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         min_trading_days_before_expiry=settings.min_trading_days_before_expiry,
     )
     position_repository = PositionStateRepository(pool)
+    stock_position_repository = StockPositionRepository(pool)
     trade_outcome_repository = TradeOutcomeRepository(pool)
     feature_store_repository = FeatureStoreRepository(pool)
 
@@ -131,6 +136,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         executor=executor,
         trade_management_config=trade_management_config,
         position_repository=position_repository,
+        stock_position_repository=stock_position_repository,
         trade_outcome_repository=trade_outcome_repository,
         feature_store_repository=feature_store_repository,
         alert_manager=alert_manager,

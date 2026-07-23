@@ -5,6 +5,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from .context import AppContext
 from .forex_loop import forex_entry_cycle, forex_position_management_cycle, forex_progress_report_cycle
+from .stock_loop import stock_entry_cycle, stock_position_management_cycle
 from .trading_loop import (
     EventCallback,
     entry_cycle,
@@ -31,6 +32,12 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
 
     async def _position_job():
         await position_management_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _stock_entry_job():
+        await stock_entry_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _stock_position_job():
+        await stock_position_management_cycle(context, datetime.now(timezone.utc), on_event)
 
     async def _loss_limit_job():
         await loss_limit_check_cycle(context, datetime.now(timezone.utc))
@@ -66,6 +73,14 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     scheduler.add_job(
         _position_job, IntervalTrigger(seconds=context.settings.position_check_interval_seconds),
         id="position_management_cycle", max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        _stock_entry_job, IntervalTrigger(seconds=context.settings.scan_interval_seconds), id="stock_entry_cycle",
+        max_instances=1, coalesce=True,
+    )
+    scheduler.add_job(
+        _stock_position_job, IntervalTrigger(seconds=context.settings.position_check_interval_seconds),
+        id="stock_position_management_cycle", max_instances=1, coalesce=True,
     )
     scheduler.add_job(
         _loss_limit_job, IntervalTrigger(seconds=context.settings.position_check_interval_seconds),

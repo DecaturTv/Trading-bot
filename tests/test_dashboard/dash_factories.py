@@ -6,6 +6,7 @@ from dashboard.context import AppContext
 from decision_engine.models import TradeDirection
 from forex.models import OpenForexPosition
 from options.models import StrategyType
+from stocks.models import OpenStockPositionRecord
 from trade_management.models import OpenPositionRecord, PersistedLeg, PositionState, TradeManagementConfig
 
 
@@ -36,6 +37,15 @@ def make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, scaled_out=Fals
                 right=OptionRight.CALL, side=OrderSide.BUY,
             )
         ],
+        state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out, peak_gain_pct=peak_gain_pct),
+    )
+
+
+def make_stock_position_record(symbol="AAPL", qty=10, entry_cost=150.0, scaled_out=False, peak_gain_pct=0.0):
+    return OpenStockPositionRecord(
+        symbol=symbol,
+        direction=TradeDirection.BULLISH,
+        entry_date=date(2026, 7, 1),
         state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out, peak_gain_pct=peak_gain_pct),
     )
 
@@ -90,6 +100,9 @@ def make_context(**overrides) -> AppContext:
     ctx.position_repository = AsyncMock()
     ctx.position_repository.get.return_value = None
     ctx.position_repository.get_all.return_value = []
+    ctx.stock_position_repository = AsyncMock()
+    ctx.stock_position_repository.get.return_value = None
+    ctx.stock_position_repository.get_all.return_value = []
     ctx.trade_outcome_repository = AsyncMock()
     ctx.trade_outcome_repository.recent_pnls.return_value = []
     ctx.trade_outcome_repository.pnls_since.return_value = []

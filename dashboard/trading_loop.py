@@ -271,6 +271,7 @@ async def progress_report_cycle(context: AppContext, now: datetime) -> None:
 
     account = await get_effective_account(context)
     positions = await context.position_repository.get_all()
+    stock_positions = await context.stock_position_repository.get_all()
     halted = await context.halt_manager.is_halted()
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
@@ -278,7 +279,8 @@ async def progress_report_cycle(context: AppContext, now: datetime) -> None:
 
     message = (
         f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
-        f"open_positions={len(positions)} status={'HALTED' if halted else 'running'}"
+        f"open_options_positions={len(positions)} open_stock_positions={len(stock_positions)} "
+        f"status={'HALTED' if halted else 'running'}"
     )
     await context.progress_notifier.send(
         Alert(title="Stocks progress", message=message, severity=Severity.INFO, timestamp=now)

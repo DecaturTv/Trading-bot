@@ -340,7 +340,7 @@ async def test_progress_report_sends_status_message():
     context.progress_notifier.send.assert_awaited_once()
     alert = context.progress_notifier.send.call_args.args[0]
     assert "12,345.67" in alert.message
-    assert "open_positions=1" in alert.message
+    assert "open_options_positions=1" in alert.message
     assert "status=running" in alert.message
 
 

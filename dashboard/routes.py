@@ -33,6 +33,11 @@ async def get_tracked_positions(request: Request):
     return await _context(request).position_repository.get_all()
 
 
+@router.get("/stocks/positions")
+async def get_stock_positions(request: Request):
+    return await _context(request).stock_position_repository.get_all()
+
+
 @router.get("/forex/positions")
 async def get_forex_positions(request: Request):
     repo = _context(request).forex_position_repository
