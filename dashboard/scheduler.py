@@ -4,7 +4,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
 
 from .context import AppContext
-from .forex_loop import forex_entry_cycle, forex_position_management_cycle
+from .forex_loop import forex_entry_cycle, forex_position_management_cycle, forex_progress_report_cycle
 from .trading_loop import (
     EventCallback,
     entry_cycle,
@@ -35,6 +35,9 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     async def _forex_position_job():
         await forex_position_management_cycle(context, datetime.now(timezone.utc), on_event)
 
+    async def _forex_progress_report_job():
+        await forex_progress_report_cycle(context, datetime.now(timezone.utc))
+
     scheduler.add_job(
         _entry_job, IntervalTrigger(seconds=context.settings.scan_interval_seconds), id="entry_cycle",
         max_instances=1, coalesce=True,
@@ -61,5 +64,10 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
             _forex_position_job, IntervalTrigger(seconds=context.settings.forex_position_check_interval_seconds),
             id="forex_position_management_cycle", max_instances=1, coalesce=True,
         )
+        if context.progress_notifier is not None:
+            scheduler.add_job(
+                _forex_progress_report_job, IntervalTrigger(seconds=context.settings.progress_report_interval_seconds),
+                id="forex_progress_report", max_instances=1, coalesce=True,
+            )
 
     return scheduler

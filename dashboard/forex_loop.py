@@ -153,3 +153,29 @@ async def _reconcile_forex_position(
         Alert(title=f"Closed {position.pair}", message=f"pnl={pnl:.2f}", severity=severity, timestamp=now)
     )
     await _emit(on_event, {"type": "forex_position_closed", "pair": position.pair, "pnl": pnl})
+
+
+async def forex_progress_report_cycle(context: AppContext, now: datetime) -> None:
+    """Periodic Discord status ping for the forex side — sent as its own
+    alert, separate from progress_report_cycle's equities/options report.
+    No-ops if Discord or OANDA isn't configured, or the forex session is
+    closed."""
+    if context.progress_notifier is None or context.forex_broker is None:
+        return
+    if not is_forex_market_open(now):
+        return
+
+    account = await get_effective_forex_account(context)
+    positions = await context.forex_position_repository.get_all()
+    halted = await context.halt_manager.is_halted()
+
+    day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
+    daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start))
+
+    message = (
+        f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
+        f"open_positions={len(positions)} status={'HALTED' if halted else 'running'}"
+    )
+    await context.progress_notifier.send(
+        Alert(title="Forex progress", message=message, severity=Severity.INFO, timestamp=now)
+    )

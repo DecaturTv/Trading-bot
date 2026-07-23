@@ -81,10 +81,11 @@ class Settings(BaseSettings):
     scan_interval_seconds: int = 900
     position_check_interval_seconds: int = 120
 
-    # Hourly Discord progress report — opt-in, only runs if a Discord webhook
-    # is configured; separate from the severity-gated AlertManager channels
-    # since it's a status ping, not an event alert.
-    progress_report_interval_seconds: int = 3600
+    # Discord progress report — opt-in, only runs if a Discord webhook is
+    # configured; separate from the severity-gated AlertManager channels
+    # since it's a status ping, not an event alert. Drives both the stocks
+    # and (if OANDA is configured) forex progress reports, sent separately.
+    progress_report_interval_seconds: int = 1800
 
     # Dashboard — required for any request to succeed (fail-closed: no
     # token configured means no access, not open access)

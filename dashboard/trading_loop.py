@@ -238,9 +238,11 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
 
 
 async def progress_report_cycle(context: AppContext, now: datetime) -> None:
-    """Hourly Discord status ping — separate from the severity-gated
-    AlertManager channels since this is a routine update, not an event alert.
-    No-ops if Discord isn't configured or the market is closed."""
+    """Periodic Discord status ping for the equities/options side — separate
+    from the severity-gated AlertManager channels since this is a routine
+    update, not an event alert. No-ops if Discord isn't configured or the
+    market is closed. See forex_progress_report_cycle for the forex
+    counterpart, sent as its own alert."""
     if context.progress_notifier is None:
         return
     if not is_equity_market_open(now):
@@ -258,5 +260,5 @@ async def progress_report_cycle(context: AppContext, now: datetime) -> None:
         f"open_positions={len(positions)} status={'HALTED' if halted else 'running'}"
     )
     await context.progress_notifier.send(
-        Alert(title="Trading bot progress", message=message, severity=Severity.INFO, timestamp=now)
+        Alert(title="Stocks progress", message=message, severity=Severity.INFO, timestamp=now)
     )

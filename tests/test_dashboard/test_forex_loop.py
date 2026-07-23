@@ -4,7 +4,7 @@ import pytest
 from dash_factories import make_account, make_bars, make_context, make_forex_position
 
 from broker.models import OrderSide
-from dashboard.forex_loop import forex_entry_cycle, forex_position_management_cycle
+from dashboard.forex_loop import forex_entry_cycle, forex_position_management_cycle, forex_progress_report_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 
 MARKET_OPEN_TUESDAY = datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)
@@ -187,3 +187,56 @@ async def test_position_management_continues_after_one_pair_raises():
     await forex_position_management_cycle(context, MARKET_OPEN_TUESDAY)  # must not raise
 
     context.forex_position_repository.delete.assert_awaited_once_with("EUR_USD")
+
+
+@pytest.mark.asyncio
+async def test_progress_report_noop_when_notifier_not_configured():
+    context = make_context()
+    context.progress_notifier = None
+    await forex_progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+    context.forex_broker.get_account.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_progress_report_noop_when_forex_broker_not_configured():
+    context = make_context()
+    context.forex_broker = None
+    await forex_progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+    context.progress_notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_progress_report_noop_when_market_closed():
+    context = make_context()
+    await forex_progress_report_cycle(context, MARKET_CLOSED_SATURDAY)
+    context.progress_notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_progress_report_sends_status_message():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=12345.67)
+    context.forex_position_repository.get_all.return_value = [make_forex_position(pair="EUR_USD")]
+    context.halt_manager.is_halted.return_value = False
+    context.trade_outcome_repository.pnls_since.return_value = [50.0, -20.0]
+
+    await forex_progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.progress_notifier.send.assert_awaited_once()
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert alert.title == "Forex progress"
+    assert "12,345.67" in alert.message
+    assert "open_positions=1" in alert.message
+    assert "status=running" in alert.message
+
+
+@pytest.mark.asyncio
+async def test_progress_report_reports_halted_status():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+    context.halt_manager.is_halted.return_value = True
+
+    await forex_progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "status=HALTED" in alert.message
