@@ -114,7 +114,7 @@ def test_forex_defaults():
     settings = Settings(_env_file=None)
     assert settings.forex_confidence_threshold == 92
     assert settings.forex_risk_pct_per_trade == pytest.approx(0.02)
-    assert settings.forex_stop_atr_multiplier == pytest.approx(1.5)
+    assert settings.forex_stop_atr_multiplier == pytest.approx(2.5)
     assert settings.forex_take_profit_r_multiple == pytest.approx(2.0)
     assert settings.forex_scan_interval_seconds == 300
     assert settings.forex_position_check_interval_seconds == 120

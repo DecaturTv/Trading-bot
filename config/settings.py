@@ -97,7 +97,7 @@ class Settings(BaseSettings):
     # tradeable pair OANDA offers, fetched fresh each cycle — not a fixed list.
     forex_confidence_threshold: int = 92
     forex_risk_pct_per_trade: float = 0.02
-    forex_stop_atr_multiplier: float = 1.5
+    forex_stop_atr_multiplier: float = 2.5
     forex_take_profit_r_multiple: float = 2.0
     forex_scan_interval_seconds: int = 300
     forex_position_check_interval_seconds: int = 120
