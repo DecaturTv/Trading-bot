@@ -167,9 +167,16 @@ async def test_position_management_reconciles_closed_position():
     events = []
     await forex_position_management_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
 
-    context.trade_outcome_repository.record_outcome.assert_awaited_once_with(
-        "EUR_USD", MARKET_OPEN_TUESDAY, 42.5, asset_class="forex"
-    )
+    context.trade_outcome_repository.record_outcome.assert_awaited_once()
+    call = context.trade_outcome_repository.record_outcome.call_args
+    assert call.args == ("EUR_USD", MARKET_OPEN_TUESDAY, 42.5)
+    assert call.kwargs["asset_class"] == "forex"
+    details = call.kwargs["details"]
+    assert details["side"] == "buy"
+    assert details["units"] == 1000
+    assert details["entry_price"] == 1.1000
+    assert details["stop_loss_price"] == 1.0950
+    assert details["take_profit_price"] == 1.1100
     context.forex_position_repository.delete.assert_awaited_once_with("EUR_USD")
     context.alert_manager.send.assert_awaited_once()
     assert events[0]["type"] == "forex_position_closed"

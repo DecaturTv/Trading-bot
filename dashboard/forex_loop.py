@@ -146,7 +146,16 @@ async def _reconcile_forex_position(
         return  # still open
 
     pnl = await context.forex_broker.get_trade_realized_pnl(position.oanda_trade_id)
-    await context.trade_outcome_repository.record_outcome(position.pair, now, pnl, asset_class="forex")
+    details = {
+        "side": position.side.value,
+        "units": position.units,
+        "entry_price": position.entry_price,
+        "stop_loss_price": position.stop_loss_price,
+        "take_profit_price": position.take_profit_price,
+        "opened_at": position.opened_at.isoformat(),
+        "held_seconds": (now - position.opened_at).total_seconds(),
+    }
+    await context.trade_outcome_repository.record_outcome(position.pair, now, pnl, asset_class="forex", details=details)
     await context.forex_position_repository.delete(position.pair)
 
     severity = Severity.WARNING if pnl < 0 else Severity.INFO

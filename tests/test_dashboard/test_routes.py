@@ -150,6 +150,21 @@ def test_get_trade_outcomes_includes_statistics():
     assert body["statistics"]["sample_size"] == 3
 
 
+def test_get_trade_history_returns_full_records():
+    context = make_context()
+    context.trade_outcome_repository.recent_trades.return_value = [
+        {"symbol": "EUR_USD", "closed_at": "2026-07-23T12:00:00Z", "pnl": -5.0, "asset_class": "forex",
+         "details": {"side": "buy", "entry_price": 1.1}}
+    ]
+    with make_client(context) as client:
+        response = client.get("/api/trade-history?asset_class=forex", headers=AUTH)
+    assert response.status_code == 200
+    body = response.json()
+    assert body[0]["symbol"] == "EUR_USD"
+    assert body[0]["details"]["side"] == "buy"
+    context.trade_outcome_repository.recent_trades.assert_awaited_once_with(limit=50, asset_class="forex")
+
+
 def test_static_index_served_at_root():
     with make_client(make_context()) as client:
         response = client.get("/")

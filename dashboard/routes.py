@@ -89,7 +89,15 @@ async def get_universe(request: Request):
 
 
 @router.get("/trade-outcomes")
-async def get_trade_outcomes(request: Request, limit: int = 50):
+async def get_trade_outcomes(request: Request, limit: int = 50, asset_class: str | None = None):
     context = _context(request)
-    pnls = await context.trade_outcome_repository.recent_pnls(limit=limit)
+    pnls = await context.trade_outcome_repository.recent_pnls(limit=limit, asset_class=asset_class)
     return {"recent_pnls": pnls, "statistics": compute_trade_statistics(pnls)}
+
+
+@router.get("/trade-history")
+async def get_trade_history(request: Request, limit: int = 50, asset_class: str | None = None):
+    # Full closed-trade records (entry/exit price, stop/target, direction,
+    # etc.) for post-mortem analysis -- /trade-outcomes only has bare pnls.
+    context = _context(request)
+    return await context.trade_outcome_repository.recent_trades(limit=limit, asset_class=asset_class)

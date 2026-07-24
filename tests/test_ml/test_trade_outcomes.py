@@ -115,3 +115,44 @@ async def test_get_live_trade_statistics_scopes_to_asset_class(pool):
     assert stats.win_rate == pytest.approx(2 / 3)
     assert stats.avg_loss == pytest.approx(10.0)  # not dragged toward the forex losses
     assert stats.sample_size == 3
+
+
+@pytest.mark.asyncio
+async def test_record_outcome_defaults_details_to_empty_dict(pool):
+    repo = TradeOutcomeRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    await repo.record_outcome("AAPL", now, 100.0)
+
+    trades = await repo.recent_trades()
+
+    assert trades[0]["details"] == {}
+
+
+@pytest.mark.asyncio
+async def test_recent_trades_roundtrips_details(pool):
+    repo = TradeOutcomeRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    details = {"side": "buy", "entry_price": 1.1, "stop_loss_price": 1.095, "take_profit_price": 1.11}
+    await repo.record_outcome("EUR_USD", now, -5.0, asset_class="forex", details=details)
+
+    trades = await repo.recent_trades(asset_class="forex")
+
+    assert len(trades) == 1
+    assert trades[0]["symbol"] == "EUR_USD"
+    assert trades[0]["pnl"] == -5.0
+    assert trades[0]["asset_class"] == "forex"
+    assert trades[0]["details"] == details
+
+
+@pytest.mark.asyncio
+async def test_recent_trades_respects_limit_and_class_filter(pool):
+    repo = TradeOutcomeRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    await repo.record_outcome("AAPL", now, 100.0, asset_class="equities")
+    await repo.record_outcome("EUR_USD", now, -5.0, asset_class="forex")
+    await repo.record_outcome("USD_JPY", now, 3.0, asset_class="forex")
+
+    trades = await repo.recent_trades(limit=1, asset_class="forex")
+
+    assert len(trades) == 1
+    assert trades[0]["symbol"] == "USD_JPY"
