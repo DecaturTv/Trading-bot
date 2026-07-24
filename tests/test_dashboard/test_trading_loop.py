@@ -370,6 +370,22 @@ async def test_loss_limit_check_scopes_halt_and_pnls_to_equities():
 
 
 @pytest.mark.asyncio
+async def test_loss_limit_check_skips_weekly_window_in_paper_mode():
+    context = make_context()
+    context.settings.trading_mode = "paper"
+    context.settings.account_start_balance = 500.0
+    # A huge historical loss that would breach the weekly limit if it were
+    # computed -- paper mode should never even query for it.
+    context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
+    context.halt_manager.check_and_halt_on_loss_limits.return_value = False
+
+    await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.trade_outcome_repository.pnls_since.assert_awaited_once()  # daily only, not daily+weekly
+    assert context.halt_manager.check_and_halt_on_loss_limits.call_args.args[1] == 0.0  # weekly_pnl_pct
+
+
+@pytest.mark.asyncio
 async def test_loss_limit_check_does_not_halt_within_limits():
     context = make_context()
     context.trade_outcome_repository.pnls_since.return_value = [-10.0]

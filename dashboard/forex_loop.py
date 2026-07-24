@@ -171,7 +171,11 @@ async def forex_loss_limit_check_cycle(context: AppContext, now: datetime) -> No
     scoped halt state and OANDA-only pnl history, so a bad day in options
     doesn't stop forex and vice versa. Same daily_loss_limit_pct/
     weekly_loss_limit_pct policy, applied against OANDA's own account
-    equity rather than Alpaca's."""
+    equity rather than Alpaca's.
+
+    Paper trading skips the weekly check, same reasoning as the equities
+    side: see trading_loop.loss_limit_check_cycle and
+    paper_reset.paper_trading_daily_reset_cycle."""
     if context.forex_broker is None:
         return
     if await context.halt_manager.is_halted("forex"):
@@ -182,10 +186,13 @@ async def forex_loss_limit_check_cycle(context: AppContext, now: datetime) -> No
         return
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
-    week_start = day_start - timedelta(days=now.weekday())
-
     daily_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="forex")) / account.equity
-    weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="forex")) / account.equity
+
+    if context.settings.trading_mode == "paper":
+        weekly_pnl_pct = 0.0
+    else:
+        week_start = day_start - timedelta(days=now.weekday())
+        weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="forex")) / account.equity
 
     triggered = await context.halt_manager.check_and_halt_on_loss_limits(
         daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,

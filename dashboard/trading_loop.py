@@ -260,6 +260,13 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
     as the denominator rather than a start-of-day snapshot (not yet tracked
     anywhere), which slightly understates loss % since it already reflects
     the day's losses; a reasonable approximation, not exact.
+
+    Paper trading skips the weekly check (see paper_trading_daily_reset_cycle,
+    which auto-clears any halt once a day) -- the point of paper trading is
+    to take a bad day, learn from it, and start the next one clean, not
+    carry a rolling weekly drag from bugs already fixed. Live trading keeps
+    the full daily+weekly protection: once real capital is on the line, a
+    bad week matters even the day after a good one.
     """
     if await context.halt_manager.is_halted("equities"):
         return
@@ -269,10 +276,13 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
         return
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
-    week_start = day_start - timedelta(days=now.weekday())
-
     daily_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="equities")) / account.equity
-    weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="equities")) / account.equity
+
+    if context.settings.trading_mode == "paper":
+        weekly_pnl_pct = 0.0
+    else:
+        week_start = day_start - timedelta(days=now.weekday())
+        weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="equities")) / account.equity
 
     triggered = await context.halt_manager.check_and_halt_on_loss_limits(
         daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,
