@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
@@ -103,6 +104,7 @@ def make_context(**overrides) -> AppContext:
     ctx.stock_position_repository = AsyncMock()
     ctx.stock_position_repository.get.return_value = None
     ctx.stock_position_repository.get_all.return_value = []
+    ctx.equities_entry_lock = asyncio.Lock()
     ctx.trade_outcome_repository = AsyncMock()
     ctx.trade_outcome_repository.recent_pnls.return_value = []
     ctx.trade_outcome_repository.pnls_since.return_value = []

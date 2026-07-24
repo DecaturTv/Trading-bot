@@ -74,33 +74,42 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
     if entry_price <= 0:
         return
 
-    account = await get_effective_account(context)
-    positions = await context.broker.get_positions()
-    check = await context.pre_trade_checker.evaluate(account, positions, symbol, entry_price)
-    if not check.passed:
-        return
+    # See dashboard.trading_loop._maybe_enter for why this section is locked:
+    # this cycle and the option 5m/15m/1h/1d cycles all commit against the
+    # same Alpaca account/budget as independent concurrent asyncio tasks.
+    async with context.equities_entry_lock:
+        if await context.position_repository.get(symbol) is not None:
+            return  # opened by a concurrent entry cycle while we were scanning
+        if await context.stock_position_repository.get(symbol) is not None:
+            return
 
-    stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
-    kelly_result = context.kelly_sizer.size(stats)
-    budget = position_budget_dollars(account.equity, kelly_result)
-    qty = contracts_for_budget(budget, entry_price)
-    if qty <= 0:
-        return
+        account = await get_effective_account(context)
+        positions = await context.broker.get_positions()
+        check = await context.pre_trade_checker.evaluate(account, positions, symbol, entry_price)
+        if not check.passed:
+            return
 
-    order = await context.broker.submit_order(
-        OrderRequest(
-            symbol=symbol, qty=qty, side=OrderSide.BUY, order_type=OrderType.LIMIT,
-            time_in_force=TimeInForce.DAY, limit_price=entry_price,
+        stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
+        kelly_result = context.kelly_sizer.size(stats)
+        budget = position_budget_dollars(account.equity, kelly_result)
+        qty = contracts_for_budget(budget, entry_price)
+        if qty <= 0:
+            return
+
+        order = await context.broker.submit_order(
+            OrderRequest(
+                symbol=symbol, qty=qty, side=OrderSide.BUY, order_type=OrderType.LIMIT,
+                time_in_force=TimeInForce.DAY, limit_price=entry_price,
+            )
         )
-    )
 
-    record = OpenStockPositionRecord(
-        symbol=symbol,
-        direction=signal.direction,
-        entry_date=now.date(),
-        state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_price, scaled_out=False, peak_gain_pct=0.0),
-    )
-    await context.stock_position_repository.upsert(record, updated_at=now)
+        record = OpenStockPositionRecord(
+            symbol=symbol,
+            direction=signal.direction,
+            entry_date=now.date(),
+            state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_price, scaled_out=False, peak_gain_pct=0.0),
+        )
+        await context.stock_position_repository.upsert(record, updated_at=now)
 
     await context.alert_manager.send(
         Alert(

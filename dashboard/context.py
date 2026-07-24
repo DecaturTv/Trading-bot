@@ -1,3 +1,4 @@
+import asyncio
 from dataclasses import dataclass, replace
 
 from alerts.base import Notifier
@@ -56,6 +57,15 @@ class AppContext:
     trade_management_config: TradeManagementConfig
     position_repository: PositionStateRepository
     stock_position_repository: StockPositionRepository
+    # Serializes the commit step (pre-trade check -> size -> submit order ->
+    # persist position) of every equities entry -- options across all
+    # timeframes (5m/15m/1h/1d) and the stock entry cycle share one Alpaca
+    # account/budget, and run as independent concurrent asyncio tasks, so
+    # without this two of them can both pass exposure checks against the
+    # same stale snapshot and collectively overcommit capital. Read-only work
+    # (bar fetch, signal scoring, option chain) stays outside the lock so
+    # cycles don't serialize on the slow part, only the actual commit.
+    equities_entry_lock: asyncio.Lock
     trade_outcome_repository: TradeOutcomeRepository
     feature_store_repository: FeatureStoreRepository
     alert_manager: AlertManager
@@ -106,6 +116,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     )
     position_repository = PositionStateRepository(pool)
     stock_position_repository = StockPositionRepository(pool)
+    equities_entry_lock = asyncio.Lock()
     trade_outcome_repository = TradeOutcomeRepository(pool)
     feature_store_repository = FeatureStoreRepository(pool)
 
@@ -137,6 +148,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         trade_management_config=trade_management_config,
         position_repository=position_repository,
         stock_position_repository=stock_position_repository,
+        equities_entry_lock=equities_entry_lock,
         trade_outcome_repository=trade_outcome_repository,
         feature_store_repository=feature_store_repository,
         alert_manager=alert_manager,

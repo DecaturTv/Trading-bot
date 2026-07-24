@@ -1,3 +1,4 @@
+import asyncio
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
@@ -171,6 +172,55 @@ async def test_entry_cycle_happy_path_opens_position():
     assert events[0]["type"] == "position_opened"
     assert events[0]["symbol"] == "AAPL"
     assert events[0]["timeframe"] == "1Day"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_entry_cycles_do_not_double_enter_same_symbol():
+    """Reproduces the AAL/TSLA/TSLL incident: two entry cycles for different
+    timeframes evaluating the same symbol concurrently. Without the shared
+    equities_entry_lock and in-lock re-check, both would pass the "no
+    existing position" check against the same stale state and both commit;
+    this asserts only one actually does."""
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)])
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+
+    # Stateful fake, not a bare mock: the in-lock re-check needs to actually
+    # observe whichever call committed first.
+    store: dict = {}
+
+    async def fake_get(symbol):
+        return store.get(symbol)
+
+    async def fake_upsert(record, updated_at):
+        store[record.symbol] = record
+
+    context.position_repository.get.side_effect = fake_get
+    context.position_repository.upsert.side_effect = fake_upsert
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+
+    # Force interleaving *inside* the critical section: every call to
+    # get_positions() (which happens right after the in-lock re-check, before
+    # commit) actually suspends, so both tasks can pass their "no existing
+    # position" check before either commits -- exactly the race that
+    # produced the AAL/TSLA/TSLL incident. Without the lock serializing the
+    # two tasks around this, both would proceed to commit.
+    async def slow_get_positions():
+        await asyncio.sleep(0.01)
+        return []
+
+    context.broker.get_positions.side_effect = slow_get_positions
+
+    await asyncio.gather(
+        entry_cycle(context, MARKET_OPEN_TUESDAY, timeframe="1Day"),
+        entry_cycle(context, MARKET_OPEN_TUESDAY, timeframe="5Min"),
+    )
+
+    context.executor.execute.assert_awaited_once()
+    assert list(store.keys()) == ["AAPL"]
 
 
 @pytest.mark.asyncio

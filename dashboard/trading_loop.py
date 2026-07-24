@@ -72,7 +72,9 @@ async def entry_cycle(context: AppContext, now: datetime, on_event: EventCallbac
 
 async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event: EventCallback, timeframe: str = "1Day") -> None:
     if await context.position_repository.get(symbol) is not None:
-        return  # already have an open position in this symbol
+        return  # already have an open options position in this symbol
+    if await context.stock_position_repository.get(symbol) is not None:
+        return  # already holding this symbol as a direct stock position instead
 
     lookback_days = _LOOKBACK_DAYS_BY_TIMEFRAME.get(timeframe, _BARS_LOOKBACK_DAYS)
     await context.ingestion_service.ingest_incremental(symbol, timeframe, end=now)
@@ -120,36 +122,49 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         logger.exception("failed to build strategy for %s", symbol)
         return
 
-    account = await get_effective_account(context)
-    positions = await context.broker.get_positions()
-    check = await context.pre_trade_checker.evaluate(account, positions, symbol, strategy.net_debit)
-    if not check.passed:
-        return
+    # Everything above this point is read-only (bars, signal, chain, strike)
+    # and safe to run concurrently across the 5m/15m/1h/1d option cycles and
+    # the stock entry cycle. From here on we're committing real capital
+    # against one shared Alpaca account/budget, so it's serialized: without
+    # this, two of those cycles could both evaluate exposure against the same
+    # stale get_positions() snapshot and collectively overcommit (see the
+    # AAL/TSLA/TSLL incident this fixes).
+    async with context.equities_entry_lock:
+        if await context.position_repository.get(symbol) is not None:
+            return  # opened by a concurrent entry cycle while we were scanning
+        if await context.stock_position_repository.get(symbol) is not None:
+            return
 
-    stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
-    kelly_result = context.kelly_sizer.size(stats)
-    budget = position_budget_dollars(account.equity, kelly_result)
-    qty = contracts_for_budget(budget, strategy.net_debit)
-    if qty <= 0:
-        return
+        account = await get_effective_account(context)
+        positions = await context.broker.get_positions()
+        check = await context.pre_trade_checker.evaluate(account, positions, symbol, strategy.net_debit)
+        if not check.passed:
+            return
 
-    result = await context.executor.execute(strategy, qty)
+        stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
+        kelly_result = context.kelly_sizer.size(stats)
+        budget = position_budget_dollars(account.equity, kelly_result)
+        qty = contracts_for_budget(budget, strategy.net_debit)
+        if qty <= 0:
+            return
 
-    leg = strategy.legs[0]
-    record = OpenPositionRecord(
-        symbol=symbol,
-        strategy_type=strategy.strategy_type,
-        direction=signal.direction,
-        entry_date=now.date(),
-        legs=[
-            PersistedLeg(
-                symbol=leg.contract.symbol, strike=leg.contract.strike, expiration=leg.contract.expiration,
-                right=leg.contract.right, side=leg.side,
-            )
-        ],
-        state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=strategy.net_debit, scaled_out=False, peak_gain_pct=0.0),
-    )
-    await context.position_repository.upsert(record, updated_at=now)
+        result = await context.executor.execute(strategy, qty)
+
+        leg = strategy.legs[0]
+        record = OpenPositionRecord(
+            symbol=symbol,
+            strategy_type=strategy.strategy_type,
+            direction=signal.direction,
+            entry_date=now.date(),
+            legs=[
+                PersistedLeg(
+                    symbol=leg.contract.symbol, strike=leg.contract.strike, expiration=leg.contract.expiration,
+                    right=leg.contract.right, side=leg.side,
+                )
+            ],
+            state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=strategy.net_debit, scaled_out=False, peak_gain_pct=0.0),
+        )
+        await context.position_repository.upsert(record, updated_at=now)
 
     await context.alert_manager.send(
         Alert(
