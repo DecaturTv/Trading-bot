@@ -61,6 +61,20 @@ async def test_entry_cycle_skips_pair_with_existing_position():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_skips_pair_at_currency_concentration_cap():
+    context = make_context()
+    context.forex_broker.get_tradeable_pairs.return_value = ["EUR_ZAR"]
+    context.forex_position_repository.get.return_value = None  # not already holding EUR_ZAR itself
+    context.forex_position_repository.get_all.return_value = [
+        make_forex_position(pair="CHF_ZAR"), make_forex_position(pair="GBP_ZAR"),
+    ]
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.get_candles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_skips_when_insufficient_candles():
     context = make_context()
     context.forex_broker.get_candles.return_value = make_bars(n=5)

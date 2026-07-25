@@ -107,9 +107,19 @@ class Settings(BaseSettings):
     forex_confidence_threshold: int = 92
     forex_risk_pct_per_trade: float = 0.02
     forex_stop_atr_multiplier: float = 2.5
-    forex_take_profit_r_multiple: float = 2.0
+    # Lowered from 2.0 on 2026-07-25: replaying real closed trades against
+    # OANDA bid/ask history showed most of them make a real favorable move
+    # early, then reverse before reaching 2R -- 0.5R was near breakeven
+    # (-0.5R net vs -5R net at 2.0R) but on a small, correlated sample, so
+    # 1.0 is a conservative step in that direction rather than the full move.
+    # See project memory.
+    forex_take_profit_r_multiple: float = 1.0
     forex_scan_interval_seconds: int = 300
     forex_position_check_interval_seconds: int = 120
+    # See forex/exposure.py -- caps how many open positions can share a
+    # currency, so correlated pairs (EUR_ZAR + CHF_ZAR + GBP_ZAR, all really
+    # one bet on ZAR) can't all stack on the same underlying move.
+    forex_max_positions_per_currency: int = 2
 
     # Congressional trade disclosures — a new decision_engine factor (see
     # DEFAULT_WEIGHTS in decision_engine/scoring.py) fed by free STOCK Act

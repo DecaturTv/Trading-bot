@@ -78,6 +78,7 @@ def make_context(**overrides) -> AppContext:
         forex_risk_pct_per_trade=0.02,
         forex_stop_atr_multiplier=1.5,
         forex_take_profit_r_multiple=2.0,
+        forex_max_positions_per_currency=2,
     )
     ctx.db = AsyncMock()
     ctx.broker = AsyncMock()

@@ -6,6 +6,7 @@ from alerts.models import Alert, Severity
 from broker.models import OrderSide
 from decision_engine.models import TradeDirection
 from forex.conversion import quote_to_account_rate
+from forex.exposure import check_currency_concentration
 from forex.models import OpenForexPosition
 from forex.sizing import units_for_risk
 from indicators.volatility import atr
@@ -60,6 +61,12 @@ async def _maybe_enter_forex(
 ) -> None:
     if await context.forex_position_repository.get(pair) is not None:
         return  # already have an open position in this pair
+
+    open_positions = await context.forex_position_repository.get_all()
+    exposure_check = check_currency_concentration(pair, open_positions, context.settings.forex_max_positions_per_currency)
+    if not exposure_check.passed:
+        logger.info("forex entry cycle skipped %s: %s", pair, exposure_check.reason)
+        return
 
     bars = await context.forex_broker.get_candles(pair, count=_CANDLE_LOOKBACK)
     if len(bars) < _MIN_CANDLES_FOR_SIGNAL:
