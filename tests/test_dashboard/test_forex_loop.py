@@ -105,6 +105,60 @@ async def test_entry_cycle_happy_path_opens_position():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_converts_stop_distance_for_non_usd_quoted_pair():
+    context = make_context()
+    # USD_JPY is only in the universe to serve as the conversion pair for
+    # sizing EUR_JPY -- give it an existing position so it's skipped as its
+    # own entry candidate rather than also opening a trade.
+    context.forex_broker.get_tradeable_pairs.return_value = ["EUR_JPY", "USD_JPY"]
+    context.forex_position_repository.get.side_effect = (
+        lambda pair: make_forex_position(pair="USD_JPY") if pair == "USD_JPY" else None
+    )
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = TradeSignal(
+        symbol="EUR_JPY", direction=TradeDirection.BULLISH, confidence=95.0,
+        factors=[FactorScore(name="momentum", value=0.9, weight=1.0)], meets_threshold=True,
+    )
+
+    async def get_pricing_side_effect(pair):
+        if pair == "USD_JPY":
+            return (110.0, 110.2)  # conversion pair
+        return (163.0, 163.02)  # EUR_JPY entry price
+
+    context.forex_broker.get_pricing.side_effect = get_pricing_side_effect
+    context.forex_broker.submit_market_order.return_value = "trade-1"
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.submit_market_order.assert_awaited_once()
+    call = context.forex_broker.submit_market_order.call_args
+    assert call.args[0] == "EUR_JPY"
+    # Without the JPY/USD conversion, stop_distance (in JPY) would be treated
+    # as USD directly, sizing to a handful of units. With conversion applied
+    # (~110 JPY per USD), the account-currency risk per unit shrinks, so the
+    # position should come out far larger than that unconverted case.
+    assert call.args[1] > 1000
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_skips_pair_with_no_tradeable_conversion_pair():
+    context = make_context()
+    context.forex_broker.get_tradeable_pairs.return_value = ["EUR_JPY"]  # no JPY_USD/USD_JPY available
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = TradeSignal(
+        symbol="EUR_JPY", direction=TradeDirection.BULLISH, confidence=95.0,
+        factors=[FactorScore(name="momentum", value=0.9, weight=1.0)], meets_threshold=True,
+    )
+    context.forex_broker.get_pricing.return_value = (163.0, 163.02)
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.submit_market_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_continues_after_one_pair_raises():
     context = make_context()
     context.forex_broker.get_tradeable_pairs.return_value = ["EUR_USD", "GBP_USD"]

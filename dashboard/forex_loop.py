@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from alerts.models import Alert, Severity
 from broker.models import OrderSide
 from decision_engine.models import TradeDirection
+from forex.conversion import quote_to_account_rate
 from forex.models import OpenForexPosition
 from forex.sizing import units_for_risk
 from indicators.volatility import atr
@@ -45,15 +46,18 @@ async def forex_entry_cycle(context: AppContext, now: datetime, on_event: EventC
         return
 
     pairs = await context.forex_broker.get_tradeable_pairs()
+    tradeable_pairs = set(pairs)
     logger.info("forex entry cycle: scanning %d pairs", len(pairs))
     for pair in pairs:
         try:
-            await _maybe_enter_forex(context, pair, now, on_event)
+            await _maybe_enter_forex(context, pair, now, on_event, tradeable_pairs)
         except Exception:
             logger.exception("forex entry cycle failed for %s", pair)
 
 
-async def _maybe_enter_forex(context: AppContext, pair: str, now: datetime, on_event: EventCallback) -> None:
+async def _maybe_enter_forex(
+    context: AppContext, pair: str, now: datetime, on_event: EventCallback, tradeable_pairs: set[str]
+) -> None:
     if await context.forex_position_repository.get(pair) is not None:
         return  # already have an open position in this pair
 
@@ -69,6 +73,10 @@ async def _maybe_enter_forex(context: AppContext, pair: str, now: datetime, on_e
     atr_values = atr(bars, _ATR_PERIOD)
     latest_atr = atr_values[-1]
     if latest_atr != latest_atr or latest_atr <= 0:  # NaN (warming up) or degenerate
+        logger.info(
+            "forex entry cycle skipped %s: signal met threshold (confidence=%.1f) but ATR is degenerate (%.6f)",
+            pair, signal.confidence, latest_atr,
+        )
         return
     stop_distance = latest_atr * context.settings.forex_stop_atr_multiplier
 
@@ -83,8 +91,16 @@ async def _maybe_enter_forex(context: AppContext, pair: str, now: datetime, on_e
         take_profit_price = entry_price - stop_distance * context.settings.forex_take_profit_r_multiple
 
     account = await get_effective_forex_account(context)
-    units = units_for_risk(account.equity, context.settings.forex_risk_pct_per_trade, stop_distance)
+    rate = await quote_to_account_rate(context.forex_broker, pair, account.currency, tradeable_pairs)
+    if rate is None:
+        return  # no tradeable conversion pair -- can't size this correctly, skip rather than guess
+
+    units = units_for_risk(account.equity, context.settings.forex_risk_pct_per_trade, stop_distance, rate)
     if units <= 0:
+        logger.info(
+            "forex entry cycle skipped %s: sized to 0 units (equity=%.2f stop_distance=%.5f rate=%.5f)",
+            pair, account.equity, stop_distance, rate,
+        )
         return
 
     trade_id = await context.forex_broker.submit_market_order(pair, units, side, stop_loss_price, take_profit_price)

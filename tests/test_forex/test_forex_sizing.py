@@ -1,14 +1,6 @@
 import pytest
 
-from forex.sizing import pip_size, units_for_risk
-
-
-def test_pip_size_jpy_pair():
-    assert pip_size("USD_JPY") == 0.01
-
-
-def test_pip_size_non_jpy_pair():
-    assert pip_size("EUR_USD") == 0.0001
+from forex.sizing import units_for_risk
 
 
 def test_units_for_risk_computes_expected_units():
@@ -17,6 +9,14 @@ def test_units_for_risk_computes_expected_units():
     # due to binary float representation of 0.005 — expected, not a bug)
     units = units_for_risk(equity=1000.0, risk_pct=0.02, stop_loss_distance=0.005)
     assert units == 3999
+
+
+def test_units_for_risk_applies_quote_to_account_rate():
+    # Same $20 risk and $0.005 stop distance, but the stop distance is in a
+    # quote currency worth half the account currency -- real account-currency
+    # risk per unit is halved, so twice as many units fit the same budget.
+    units = units_for_risk(equity=1000.0, risk_pct=0.02, stop_loss_distance=0.005, quote_to_account_rate=0.5)
+    assert units == 7999
 
 
 def test_units_for_risk_rejects_non_positive_equity():
@@ -32,3 +32,8 @@ def test_units_for_risk_rejects_invalid_risk_pct():
 def test_units_for_risk_rejects_non_positive_stop_distance():
     with pytest.raises(ValueError):
         units_for_risk(equity=1000.0, risk_pct=0.02, stop_loss_distance=0.0)
+
+
+def test_units_for_risk_rejects_non_positive_conversion_rate():
+    with pytest.raises(ValueError):
+        units_for_risk(equity=1000.0, risk_pct=0.02, stop_loss_distance=0.005, quote_to_account_rate=0.0)
