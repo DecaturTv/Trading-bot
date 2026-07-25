@@ -293,7 +293,12 @@ class AlpacaAdapter(BrokerAdapter):
             feed=DataFeed.IEX,
         )
         raw = await self._call(self._data_client.get_stock_bars, request)
-        return [_map_bar(symbol, b) for b in raw[symbol]]
+        # BarSet omits the symbol key entirely (not an empty list) when the
+        # requested window has no bars -- the normal case for an incremental
+        # fetch that's already caught up (e.g. no new daily bar since the
+        # last one stored). raw[symbol] would KeyError on every such call.
+        bars = getattr(raw, "data", raw).get(symbol, [])
+        return [_map_bar(symbol, b) for b in bars]
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
     async def get_most_active_symbols(self, top: int = 20) -> list[ActiveSymbol]:

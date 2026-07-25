@@ -129,6 +129,20 @@ async def test_get_bars_maps_list():
     assert bars[0].close == 151
 
 
+@pytest.mark.asyncio
+async def test_get_bars_returns_empty_list_when_symbol_key_missing():
+    """BarSet omits the symbol key (not an empty list) when there are no bars
+    in the requested window -- e.g. an incremental fetch that's already
+    caught up. Must not raise KeyError."""
+    adapter, _, data_client = make_adapter()
+    now = datetime.now(timezone.utc)
+    data_client.get_stock_bars.return_value = {}
+
+    bars = await adapter.get_bars("AAPL", "1Day", now, now)
+
+    assert bars == []
+
+
 def test_invalid_timeframe_raises():
     from broker.alpaca_adapter import _parse_timeframe
 
