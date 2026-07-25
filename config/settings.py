@@ -111,6 +111,16 @@ class Settings(BaseSettings):
     forex_scan_interval_seconds: int = 300
     forex_position_check_interval_seconds: int = 120
 
+    # Congressional trade disclosures — a new decision_engine factor (see
+    # DEFAULT_WEIGHTS in decision_engine/scoring.py) fed by free STOCK Act
+    # PTR data (House only for now; see congress/source.py). Members named
+    # here count 2x as heavily in the factor; empty means every disclosure
+    # counts equally regardless of filer. Only explicitly-requested names are
+    # defaulted in here rather than a broader hand-picked list.
+    congress_tracked_members: tuple[str, ...] = ("Nancy Pelosi",)
+    congress_lookback_days: int = 30
+    congress_sync_interval_hours: int = 6
+
     @model_validator(mode="after")
     def _enforce_live_trading_gate(self) -> "Settings":
         if self.trading_mode == "live" and not self.live_risk_ack:

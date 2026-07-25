@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass, replace
+from datetime import timedelta
 
 from alerts.base import Notifier
 from alerts.discord_notifier import DiscordNotifier
@@ -9,6 +10,10 @@ from broker.alpaca_adapter import AlpacaAdapter
 from broker.base import BrokerAdapter
 from broker.models import Account
 from config.settings import Settings
+from congress.manager import CongressTradeManager
+from congress.repository import CongressTradeRepository
+from congress.schema import apply_congress_schema
+from congress.source import HouseStockWatcherSource
 from data.bars_repository import BarsRepository
 from data.database import Database
 from data.ingestion import BarIngestionService
@@ -72,6 +77,7 @@ class AppContext:
     progress_notifier: Notifier | None
     forex_broker: OandaAdapter | None
     forex_position_repository: ForexPositionRepository | None
+    congress_trade_manager: CongressTradeManager
 
 
 async def build_context(settings: Settings, broker: BrokerAdapter | None = None) -> AppContext:
@@ -90,6 +96,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     await apply_trade_outcome_schema(pool)
     await apply_forex_position_schema(pool)
     await apply_stock_position_schema(pool)
+    await apply_congress_schema(pool)
 
     broker = broker or AlpacaAdapter.from_settings(settings)
 
@@ -132,6 +139,12 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         forex_broker = OandaAdapter(settings.oanda_api_key, settings.oanda_account_id, live=settings.trading_mode == "live")
         forex_position_repository = ForexPositionRepository(pool)
 
+    congress_trade_manager = CongressTradeManager(
+        HouseStockWatcherSource(),
+        CongressTradeRepository(pool),
+        refresh_interval=timedelta(hours=settings.congress_sync_interval_hours),
+    )
+
     return AppContext(
         settings=settings,
         db=db,
@@ -155,6 +168,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         progress_notifier=progress_notifier,
         forex_broker=forex_broker,
         forex_position_repository=forex_position_repository,
+        congress_trade_manager=congress_trade_manager,
     )
 
 

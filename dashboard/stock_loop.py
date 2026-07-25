@@ -63,7 +63,13 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
         return
 
     scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, bars)) is not None]
-    signal = context.decision_model.score(symbol, bars, scan_hits, context.settings.confidence_threshold)
+    congress_trades = await context.congress_trade_manager.get_recent_trades(
+        symbol, now, lookback_days=context.settings.congress_lookback_days
+    )
+    signal = context.decision_model.score(
+        symbol, bars, scan_hits, context.settings.confidence_threshold,
+        congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
+    )
     # Long-only: a bearish signal is the options long_put path's territory,
     # not shorting shares (would need margin/borrow handling this doesn't have).
     if not signal.meets_threshold or signal.direction is not TradeDirection.BULLISH:
@@ -72,6 +78,10 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
     quote = await context.broker.get_latest_quote(symbol)
     entry_price = quote.ask_price
     if entry_price <= 0:
+        logger.info(
+            "stock entry cycle skipped %s: signal met threshold (confidence=%.1f) but ask price is %.2f",
+            symbol, signal.confidence, entry_price,
+        )
         return
 
     # See dashboard.trading_loop._maybe_enter for why this section is locked:
@@ -87,6 +97,8 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
         positions = await context.broker.get_positions()
         check = await context.pre_trade_checker.evaluate(account, positions, symbol, entry_price)
         if not check.passed:
+            failed = [f"{c.name}: {c.reason}" for c in check.checks if not c.passed]
+            logger.info("stock entry cycle skipped %s: pre-trade check failed (%s)", symbol, "; ".join(failed))
             return
 
         stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
@@ -94,6 +106,10 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
         budget = position_budget_dollars(account.equity, kelly_result)
         qty = contracts_for_budget(budget, entry_price)
         if qty <= 0:
+            logger.info(
+                "stock entry cycle skipped %s: budget $%.2f can't afford one share at ask $%.2f",
+                symbol, budget, entry_price,
+            )
             return
 
         order = await context.broker.submit_order(

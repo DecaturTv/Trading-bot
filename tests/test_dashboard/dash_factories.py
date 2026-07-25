@@ -116,6 +116,10 @@ def make_context(**overrides) -> AppContext:
     ctx.forex_position_repository = AsyncMock()
     ctx.forex_position_repository.get.return_value = None
     ctx.forex_position_repository.get_all.return_value = []
+    ctx.congress_trade_manager = AsyncMock()
+    ctx.congress_trade_manager.get_recent_trades.return_value = []
+    ctx.settings.congress_lookback_days = 30
+    ctx.settings.congress_tracked_members = ("Nancy Pelosi",)
 
     for key, value in overrides.items():
         setattr(ctx, key, value)

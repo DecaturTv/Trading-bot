@@ -83,7 +83,13 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         return
 
     scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, bars)) is not None]
-    signal = context.decision_model.score(symbol, bars, scan_hits, context.settings.confidence_threshold)
+    congress_trades = await context.congress_trade_manager.get_recent_trades(
+        symbol, now, lookback_days=context.settings.congress_lookback_days
+    )
+    signal = context.decision_model.score(
+        symbol, bars, scan_hits, context.settings.confidence_threshold,
+        congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
+    )
     if not signal.meets_threshold or signal.direction is TradeDirection.NEUTRAL:
         return
 
@@ -91,6 +97,10 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
     chain = await context.broker.get_option_chain(symbol)
     expirations = sorted({c.expiration for c in chain if c.right is right})
     if not expirations:
+        logger.info(
+            "entry cycle (%s) skipped %s: signal met threshold (confidence=%.1f) but option chain has no %s contracts",
+            timeframe, symbol, signal.confidence, right.value,
+        )
         return
     expiration = select_expiration(expirations, context.settings.option_target_dte, now.date())
 
@@ -113,7 +123,11 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
     target_delta = context.settings.option_target_delta if right is OptionRight.CALL else -context.settings.option_target_delta
     try:
         contract = select_strike_by_delta(candidates, target_delta)
-    except ValueError:
+    except ValueError as exc:
+        logger.info(
+            "entry cycle (%s) skipped %s: no contract near target delta %.2f among %d candidates (%s)",
+            timeframe, symbol, target_delta, len(candidates), exc,
+        )
         return
 
     try:
@@ -139,6 +153,8 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         positions = await context.broker.get_positions()
         check = await context.pre_trade_checker.evaluate(account, positions, symbol, strategy.net_debit)
         if not check.passed:
+            failed = [f"{c.name}: {c.reason}" for c in check.checks if not c.passed]
+            logger.info("entry cycle (%s) skipped %s: pre-trade check failed (%s)", timeframe, symbol, "; ".join(failed))
             return
 
         stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
@@ -146,6 +162,10 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         budget = position_budget_dollars(account.equity, kelly_result)
         qty = contracts_for_budget(budget, strategy.net_debit)
         if qty <= 0:
+            logger.info(
+                "entry cycle (%s) skipped %s: budget $%.2f can't afford one contract at net_debit $%.2f",
+                timeframe, symbol, budget, strategy.net_debit,
+            )
             return
 
         result = await context.executor.execute(strategy, qty)

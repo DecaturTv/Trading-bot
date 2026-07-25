@@ -4,8 +4,10 @@ import pytest
 from bar_factories import make_bars
 
 from broker.models import Bar
+from congress.models import CongressTrade, TransactionType
 from decision_engine.factors import (
     candlestick_factor,
+    congress_factor,
     gap_factor,
     macd_factor,
     momentum_factor,
@@ -13,6 +15,14 @@ from decision_engine.factors import (
     unusual_volume_factor,
 )
 from scanner.models import ScanHit, ScanType
+
+
+def make_trade(ticker="AAPL", representative="Nancy Pelosi", transaction_type=TransactionType.BUY, disclosure_date=None, amount_mid=250_000.0):
+    return CongressTrade(
+        representative=representative, chamber="house", ticker=ticker, transaction_type=transaction_type,
+        transaction_date=disclosure_date, disclosure_date=disclosure_date, amount_mid=amount_mid,
+        filing_id="1", source_url="https://example.com/1.pdf",
+    )
 
 
 def make_bar(open, high, low, close, i=0):
@@ -132,3 +142,66 @@ def test_candlestick_factor_negative_on_bearish_pattern():
 def test_candlestick_factor_none_without_a_pattern():
     bars = [make_bar(open=50, high=50.2, low=49.8, close=50.05, i=i) for i in range(10)]
     assert candlestick_factor(bars) is None
+
+
+def test_congress_factor_none_without_trades():
+    bars = make_bars([100.0])
+    assert congress_factor(bars, []) is None
+
+
+def test_congress_factor_bullish_on_a_recent_buy():
+    bars = make_bars([100.0])
+    as_of = bars[-1].timestamp.date()
+    trade = make_trade(transaction_type=TransactionType.BUY, disclosure_date=as_of)
+    value = congress_factor(bars, [trade])
+    assert value is not None
+    assert value > 0
+
+
+def test_congress_factor_bearish_on_a_recent_sell():
+    bars = make_bars([100.0])
+    as_of = bars[-1].timestamp.date()
+    trade = make_trade(transaction_type=TransactionType.SELL, disclosure_date=as_of)
+    value = congress_factor(bars, [trade])
+    assert value is not None
+    assert value < 0
+
+
+def test_congress_factor_ignores_disclosure_not_yet_public_as_of_bar():
+    bars = make_bars([100.0])
+    as_of = bars[-1].timestamp.date()
+    future_trade = make_trade(disclosure_date=as_of + timedelta(days=1))
+    assert congress_factor(bars, [future_trade]) is None
+
+
+def test_congress_factor_ignores_disclosure_older_than_lookback():
+    bars = make_bars([100.0])
+    as_of = bars[-1].timestamp.date()
+    stale_trade = make_trade(disclosure_date=as_of - timedelta(days=31))
+    assert congress_factor(bars, [stale_trade], lookback_days=30) is None
+
+
+def test_congress_factor_weights_tracked_member_more_heavily():
+    bars = make_bars([100.0])
+    as_of = bars[-1].timestamp.date()
+    tracked_buy = make_trade(representative="Nancy Pelosi", transaction_type=TransactionType.BUY, disclosure_date=as_of, amount_mid=50_000.0)
+    untracked_sell = make_trade(representative="Some Rep", transaction_type=TransactionType.SELL, disclosure_date=as_of, amount_mid=50_000.0)
+
+    value = congress_factor(bars, [tracked_buy, untracked_sell], tracked_members=["Nancy Pelosi"])
+
+    # Equal dollar amounts, opposite directions -- without the tracked-member
+    # multiplier this would net to ~0. With it, the tracked buy should win out.
+    assert value is not None
+    assert value > 0
+
+
+def test_congress_factor_recency_decay_favors_more_recent_disclosure():
+    bars = make_bars([100.0])
+    as_of = bars[-1].timestamp.date()
+    fresh_buy = make_trade(representative="A", transaction_type=TransactionType.BUY, disclosure_date=as_of, amount_mid=50_000.0)
+    stale_sell = make_trade(representative="B", transaction_type=TransactionType.SELL, disclosure_date=as_of - timedelta(days=29), amount_mid=50_000.0)
+
+    value = congress_factor(bars, [fresh_buy, stale_sell], lookback_days=30)
+
+    assert value is not None
+    assert value > 0

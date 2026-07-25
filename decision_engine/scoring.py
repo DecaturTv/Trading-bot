@@ -1,27 +1,43 @@
 from collections.abc import Sequence
 
 from broker.models import Bar
+from congress.models import CongressTrade
 from scanner.models import ScanHit
 
-from .factors import candlestick_factor, gap_factor, macd_factor, momentum_factor, trend_factor, unusual_volume_factor
+from .factors import (
+    candlestick_factor,
+    congress_factor,
+    gap_factor,
+    macd_factor,
+    momentum_factor,
+    trend_factor,
+    unusual_volume_factor,
+)
 from .models import FactorScore, TradeDirection, TradeSignal
 
+# congress carries real weight (not a token addition) because a disclosed
+# buy/sell from a tracked member is meant to actually move the signal, not
+# get diluted to near-nothing by six technical factors -- see project memory
+# on the congress-trading feature. The other factors were scaled down
+# proportionally (each 0.8x its old value) so the total still sums to 1.0.
 DEFAULT_WEIGHTS = {
-    "momentum": 0.20,
-    "trend": 0.25,
-    "macd": 0.15,
-    "unusual_volume": 0.15,
-    "gap": 0.10,
-    "candlestick": 0.15,
+    "momentum": 0.16,
+    "trend": 0.20,
+    "macd": 0.12,
+    "unusual_volume": 0.12,
+    "gap": 0.08,
+    "candlestick": 0.12,
+    "congress": 0.20,
 }
 
 _FACTOR_FUNCTIONS = {
-    "momentum": lambda bars, scan_hits: momentum_factor(bars),
-    "trend": lambda bars, scan_hits: trend_factor(bars),
-    "macd": lambda bars, scan_hits: macd_factor(bars),
-    "unusual_volume": lambda bars, scan_hits: unusual_volume_factor(bars, scan_hits),
-    "gap": lambda bars, scan_hits: gap_factor(scan_hits),
-    "candlestick": lambda bars, scan_hits: candlestick_factor(bars),
+    "momentum": lambda bars, scan_hits, congress_trades, tracked_members: momentum_factor(bars),
+    "trend": lambda bars, scan_hits, congress_trades, tracked_members: trend_factor(bars),
+    "macd": lambda bars, scan_hits, congress_trades, tracked_members: macd_factor(bars),
+    "unusual_volume": lambda bars, scan_hits, congress_trades, tracked_members: unusual_volume_factor(bars, scan_hits),
+    "gap": lambda bars, scan_hits, congress_trades, tracked_members: gap_factor(scan_hits),
+    "candlestick": lambda bars, scan_hits, congress_trades, tracked_members: candlestick_factor(bars),
+    "congress": lambda bars, scan_hits, congress_trades, tracked_members: congress_factor(bars, congress_trades, tracked_members),
 }
 
 
@@ -50,12 +66,14 @@ class WeightedFactorModel:
         bars: Sequence[Bar],
         scan_hits: Sequence[ScanHit],
         confidence_threshold: float,
+        congress_trades: Sequence[CongressTrade] = (),
+        tracked_members: Sequence[str] = (),
     ) -> TradeSignal:
         factors: list[FactorScore] = []
         for name, weight in self._weights.items():
             if weight <= 0:
                 continue
-            value = _FACTOR_FUNCTIONS[name](bars, scan_hits)
+            value = _FACTOR_FUNCTIONS[name](bars, scan_hits, congress_trades, tracked_members)
             if value is None:
                 continue
             factors.append(FactorScore(name=name, value=value, weight=weight))

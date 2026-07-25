@@ -11,7 +11,9 @@ def patch_factors(monkeypatch, **values):
 
     for name in scoring_module.DEFAULT_WEIGHTS:
         value = values.get(name)
-        monkeypatch.setitem(scoring_module._FACTOR_FUNCTIONS, name, lambda bars, scan_hits, v=value: v)
+        monkeypatch.setitem(
+            scoring_module._FACTOR_FUNCTIONS, name, lambda bars, scan_hits, congress_trades, tracked_members, v=value: v
+        )
 
 
 def test_score_combines_factors_as_weighted_average(monkeypatch):
@@ -91,3 +93,40 @@ def test_meets_threshold_boundary(monkeypatch):
 def test_rejects_unknown_factor_name():
     with pytest.raises(ValueError, match="unknown factor"):
         WeightedFactorModel(weights={"covered_call_iv": 0.5})
+
+
+def test_congress_factor_is_included_in_default_weights_and_blended(monkeypatch):
+    # Every other factor bearish, congress alone bullish -- with congress's
+    # real DEFAULT_WEIGHTS share (0.20) it shouldn't be enough to flip the
+    # overall direction, proving it's actually wired into the blend (not
+    # ignored) without being so dominant it overrides everything else.
+    patch_factors(monkeypatch, momentum=-1.0, trend=-1.0, macd=-1.0, unusual_volume=-1.0, gap=-1.0, candlestick=-1.0, congress=1.0)
+    model = WeightedFactorModel()  # default weights
+
+    signal = model.score("AAPL", bars=[], scan_hits=[], confidence_threshold=10.0)
+
+    assert signal.direction is TradeDirection.BEARISH
+    expected = abs(sum(w if name == "congress" else -w for name, w in model._weights.items())) * 100
+    assert signal.confidence == pytest.approx(expected)
+
+
+def test_congress_factor_receives_trades_and_tracked_members(monkeypatch):
+    import decision_engine.scoring as scoring_module
+
+    seen = {}
+
+    def fake_congress(bars, scan_hits, congress_trades, tracked_members):
+        seen["congress_trades"] = congress_trades
+        seen["tracked_members"] = tracked_members
+        return 0.5
+
+    monkeypatch.setitem(scoring_module._FACTOR_FUNCTIONS, "congress", fake_congress)
+    model = WeightedFactorModel(weights={"congress": 1.0})
+
+    model.score(
+        "AAPL", bars=[], scan_hits=[], confidence_threshold=10.0,
+        congress_trades=["dummy-trade"], tracked_members=["Nancy Pelosi"],
+    )
+
+    assert seen["congress_trades"] == ["dummy-trade"]
+    assert seen["tracked_members"] == ["Nancy Pelosi"]

@@ -1,6 +1,7 @@
 from collections.abc import Sequence
 
 from broker.models import Bar
+from congress.models import CongressTrade, TransactionType
 from indicators.candlesticks import detect_pattern
 from indicators.momentum import macd, rsi
 from indicators.trend import supertrend
@@ -84,3 +85,45 @@ def candlestick_factor(bars: Sequence[Bar]) -> float | None:
     if pattern is None:
         return None
     return _clip(pattern.direction * pattern.strength)
+
+
+def congress_factor(
+    bars: Sequence[Bar],
+    trades: Sequence[CongressTrade],
+    tracked_members: Sequence[str] = (),
+    lookback_days: int = 30,
+    full_scale_amount: float = 250_000.0,
+) -> float | None:
+    """Net direction/strength of recent congressional STOCK Act disclosures
+    on this symbol. Direction comes from buy vs sell; magnitude scales with
+    disclosed dollar amount, a 2x multiplier for tracked_members (matched
+    case-insensitively as a substring against the filer's name), and a linear
+    recency decay so a disclosure from yesterday counts more than one from
+    three weeks ago. `bars[-1]`'s date stands in for "today", so this stays
+    correct when scoring a historical bar rather than the live one."""
+    if not bars or not trades:
+        return None
+
+    as_of = bars[-1].timestamp.date()
+    total_weight = 0.0
+    signed_weight = 0.0
+    for trade in trades:
+        age_days = (as_of - trade.disclosure_date).days
+        if age_days < 0 or age_days > lookback_days:
+            continue  # not yet disclosed as of this bar, or too stale to be actionable
+        recency = 1.0 - age_days / lookback_days
+        sign = 1.0 if trade.transaction_type is TransactionType.BUY else -1.0
+        member_multiplier = 2.0 if _is_tracked_member(trade.representative, tracked_members) else 1.0
+        amount_weight = _clip(trade.amount_mid / full_scale_amount, 0.0, 1.0) if trade.amount_mid > 0 else 0.1
+        weight = amount_weight * member_multiplier * recency
+        signed_weight += sign * weight
+        total_weight += weight
+
+    if total_weight == 0:
+        return None
+    return _clip(signed_weight / total_weight)
+
+
+def _is_tracked_member(representative: str, tracked_members: Sequence[str]) -> bool:
+    name = representative.lower()
+    return any(member.lower() in name for member in tracked_members)
