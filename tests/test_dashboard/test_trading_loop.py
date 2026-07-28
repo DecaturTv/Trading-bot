@@ -34,6 +34,13 @@ def bullish_signal(confidence=95.0):
     )
 
 
+def bearish_signal(confidence=95.0):
+    return TradeSignal(
+        symbol="AAPL", direction=TradeDirection.BEARISH, confidence=confidence,
+        factors=[FactorScore(name="momentum", value=-0.9, weight=1.0)], meets_threshold=confidence >= 92,
+    )
+
+
 def neutral_signal():
     return TradeSignal(symbol="AAPL", direction=TradeDirection.NEUTRAL, confidence=0.0, factors=[], meets_threshold=False)
 
@@ -374,6 +381,7 @@ async def test_position_management_cycle_defers_stop_loss_until_confirmed():
     context.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
+        reversal_confirmation_count=1,
     )
     record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, stop_loss_streak=0)
     leg_symbol = record.legs[0].symbol
@@ -405,6 +413,7 @@ async def test_position_management_cycle_closes_on_second_consecutive_stop_loss_
     context.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
+        reversal_confirmation_count=1,
     )
     # Streak already at 1 from a prior check -- this breach is the 2nd in a
     # row and should now actually close.
@@ -427,6 +436,68 @@ async def test_position_management_cycle_closes_on_second_consecutive_stop_loss_
 
 
 @pytest.mark.asyncio
+async def test_position_management_cycle_closes_on_confirmed_reversal():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1,
+    )
+    record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, direction=TradeDirection.BULLISH)
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    # Flat PnL -- no stop-loss/scale-out/trailing rule triggered, isolating
+    # the reversal-exit path.
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=4.99, ask=5.01, last_price=5.0, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.5, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bearish_signal()  # thesis reversed
+
+    events = []
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.position_repository.delete.assert_awaited_once_with("AAPL")
+    assert events[0]["action"] == "reversal_exit"
+
+
+@pytest.mark.asyncio
+async def test_position_management_cycle_defers_reversal_exit_until_confirmed():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=3,
+    )
+    record = make_position_record(
+        symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, direction=TradeDirection.BULLISH, reversal_streak=0,
+    )
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=4.99, ask=5.01, last_price=5.0, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.5, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bearish_signal()
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_not_awaited()
+    context.position_repository.upsert.assert_awaited_once()
+    persisted = context.position_repository.upsert.call_args.args[0]
+    assert persisted.state.reversal_streak == 1
+
+
+@pytest.mark.asyncio
 async def test_loss_limit_check_noop_when_already_halted():
     context = make_context()
     context.halt_manager.is_halted.return_value = True
@@ -437,6 +508,7 @@ async def test_loss_limit_check_noop_when_already_halted():
 @pytest.mark.asyncio
 async def test_loss_limit_check_scopes_halt_and_pnls_to_equities():
     context = make_context()
+    context.settings.trading_mode = "live"
     context.trade_outcome_repository.pnls_since.return_value = [-10.0]
     context.halt_manager.check_and_halt_on_loss_limits.return_value = False
 
@@ -456,17 +528,16 @@ async def test_loss_limit_check_skips_weekly_window_in_paper_mode():
     # A huge historical loss that would breach the weekly limit if it were
     # computed -- paper mode should never even query for it.
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
-    context.halt_manager.check_and_halt_on_loss_limits.return_value = False
 
     await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
 
     context.trade_outcome_repository.pnls_since.assert_awaited_once()  # daily only, not daily+weekly
-    assert context.halt_manager.check_and_halt_on_loss_limits.call_args.args[1] == 0.0  # weekly_pnl_pct
 
 
 @pytest.mark.asyncio
 async def test_loss_limit_check_does_not_halt_within_limits():
     context = make_context()
+    context.settings.trading_mode = "live"
     context.trade_outcome_repository.pnls_since.return_value = [-10.0]
     context.halt_manager.check_and_halt_on_loss_limits.return_value = False
 
@@ -478,6 +549,7 @@ async def test_loss_limit_check_does_not_halt_within_limits():
 @pytest.mark.asyncio
 async def test_loss_limit_check_sends_critical_alert_when_triggered():
     context = make_context()
+    context.settings.trading_mode = "live"
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
     context.halt_manager.check_and_halt_on_loss_limits.return_value = True
 
@@ -486,6 +558,49 @@ async def test_loss_limit_check_sends_critical_alert_when_triggered():
     context.alert_manager.send.assert_awaited_once()
     alert = context.alert_manager.send.call_args.args[0]
     assert alert.severity.value == "critical"
+    assert "halted" in alert.title.lower()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_paper_mode_never_halts():
+    context = make_context()
+    context.settings.trading_mode = "paper"
+    context.settings.account_start_balance = 500.0
+    # Deep breach of both the daily limit -- in live mode this would halt.
+    context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
+
+    await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.halt_manager.halt.assert_not_awaited()
+    context.halt_manager.check_and_halt_on_loss_limits.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_paper_mode_notifies_on_breach_without_halting():
+    context = make_context()
+    context.settings.trading_mode = "paper"
+    context.settings.account_start_balance = 500.0
+    context.trade_outcome_repository.pnls_since.return_value = [-1000.0]  # -200% of $500, breaches 5% daily limit
+
+    await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.alert_manager.send.assert_awaited_once()
+    alert = context.alert_manager.send.call_args.args[0]
+    assert alert.severity.value == "warning"
+    assert "not halted" in alert.title.lower()
+    assert "daily loss limit breached" in alert.message
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_paper_mode_no_alert_within_limits():
+    context = make_context()
+    context.settings.trading_mode = "paper"
+    context.settings.account_start_balance = 500.0
+    context.trade_outcome_repository.pnls_since.return_value = [-10.0]  # -2%, within the 5% limit
+
+    await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.alert_manager.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

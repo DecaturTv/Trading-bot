@@ -6,6 +6,7 @@ from dash_factories import make_account, make_bars, make_context, make_position_
 from broker.models import Order, OrderSide, OrderStatus, OrderType, Quote
 from dashboard.stock_loop import stock_entry_cycle, stock_position_management_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
+from decision_engine.signal_confirmation_repository import SignalConfirmationState
 from risk.kelly import KellyResult
 from trade_management.models import TradeManagementConfig
 
@@ -175,6 +176,60 @@ async def test_entry_cycle_happy_path_opens_position():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_awaits_signal_confirmation_before_opening():
+    context = make_context()
+    context.settings.signal_confirmation_count = 3
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.signal_confirmation_repository.get.return_value = None  # first qualifying scan
+
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.get_latest_quote.assert_not_awaited()
+    context.signal_confirmation_repository.upsert.assert_awaited_once()
+    args = context.signal_confirmation_repository.upsert.call_args.args
+    assert args[0] == "AAPL" and args[1] == "stock" and args[2] == "1Day"
+    assert args[3] is TradeDirection.BULLISH
+    assert args[4] == 1
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_opens_once_signal_confirmation_count_reached():
+    context = make_context()
+    context.settings.signal_confirmation_count = 3
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.signal_confirmation_repository.get.return_value = SignalConfirmationState(
+        direction=TradeDirection.BULLISH, streak=2, updated_at=MARKET_OPEN_TUESDAY,
+    )
+    context.broker.get_latest_quote.return_value = make_quote(ask=100.0)
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.broker.get_account.return_value = make_account(equity=10000.0)
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+    context.broker.submit_order.return_value = make_order()
+
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.signal_confirmation_repository.clear.assert_awaited_once_with("AAPL", "stock", "1Day")
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_clears_confirmation_streak_when_signal_no_longer_qualifies():
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = neutral_signal()
+
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.signal_confirmation_repository.clear.assert_awaited_once_with("AAPL", "stock", "1Day")
+    context.signal_confirmation_repository.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_continues_after_one_symbol_raises():
     context = make_context()
     context.universe_manager.get_universe.return_value = ["AAPL", "TSLA"]
@@ -234,6 +289,7 @@ async def test_position_management_defers_stop_loss_until_confirmed():
     context.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
+        reversal_confirmation_count=1,
     )
     record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, stop_loss_streak=0)
     context.stock_position_repository.get_all.return_value = [record]
@@ -246,6 +302,51 @@ async def test_position_management_defers_stop_loss_until_confirmed():
     context.stock_position_repository.upsert.assert_awaited_once()
     persisted = context.stock_position_repository.upsert.call_args.args[0]
     assert persisted.state.stop_loss_streak == 1
+
+
+@pytest.mark.asyncio
+async def test_position_management_closes_on_confirmed_reversal():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1,
+    )
+    record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, direction=TradeDirection.BULLISH)
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=105.0)  # +5%, no PnL rule triggered
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bearish_signal()  # thesis reversed
+    context.broker.submit_order.return_value = make_order(qty=10, side=OrderSide.SELL)
+
+    events = []
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.stock_position_repository.delete.assert_awaited_once_with("AAPL")
+    assert events[0]["action"] == "reversal_exit"
+
+
+@pytest.mark.asyncio
+async def test_position_management_defers_reversal_exit_until_confirmed():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=3,
+    )
+    record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, direction=TradeDirection.BULLISH, reversal_streak=0)
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=105.0)
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bearish_signal()
+
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_not_awaited()
+    context.stock_position_repository.upsert.assert_awaited_once()
+    persisted = context.stock_position_repository.upsert.call_args.args[0]
+    assert persisted.state.reversal_streak == 1
 
 
 @pytest.mark.asyncio

@@ -407,6 +407,7 @@ async def test_loss_limit_check_noop_when_already_halted():
 @pytest.mark.asyncio
 async def test_loss_limit_check_scopes_halt_and_pnls_to_forex():
     context = make_context()
+    context.settings.trading_mode = "live"
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-10.0]
     context.halt_manager.check_and_halt_on_loss_limits.return_value = False
@@ -426,17 +427,16 @@ async def test_loss_limit_check_skips_weekly_window_in_paper_mode():
     context.settings.account_start_balance = 500.0
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
-    context.halt_manager.check_and_halt_on_loss_limits.return_value = False
 
     await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
 
     context.trade_outcome_repository.pnls_since.assert_awaited_once()  # daily only, not daily+weekly
-    assert context.halt_manager.check_and_halt_on_loss_limits.call_args.args[1] == 0.0  # weekly_pnl_pct
 
 
 @pytest.mark.asyncio
 async def test_loss_limit_check_does_not_halt_within_limits():
     context = make_context()
+    context.settings.trading_mode = "live"
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-10.0]
     context.halt_manager.check_and_halt_on_loss_limits.return_value = False
@@ -449,6 +449,7 @@ async def test_loss_limit_check_does_not_halt_within_limits():
 @pytest.mark.asyncio
 async def test_loss_limit_check_sends_critical_alert_when_triggered():
     context = make_context()
+    context.settings.trading_mode = "live"
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
     context.halt_manager.check_and_halt_on_loss_limits.return_value = True
@@ -459,3 +460,49 @@ async def test_loss_limit_check_sends_critical_alert_when_triggered():
     alert = context.alert_manager.send.call_args.args[0]
     assert alert.severity.value == "critical"
     assert "forex" in alert.title.lower()
+    assert "halted" in alert.title.lower()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_paper_mode_never_halts():
+    context = make_context()
+    context.settings.trading_mode = "paper"
+    context.settings.account_start_balance = 500.0
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+    context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
+
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.halt_manager.halt.assert_not_awaited()
+    context.halt_manager.check_and_halt_on_loss_limits.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_paper_mode_notifies_on_breach_without_halting():
+    context = make_context()
+    context.settings.trading_mode = "paper"
+    context.settings.account_start_balance = 500.0
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+    context.trade_outcome_repository.pnls_since.return_value = [-1000.0]  # -200% of $500, breaches 5% daily limit
+
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.alert_manager.send.assert_awaited_once()
+    alert = context.alert_manager.send.call_args.args[0]
+    assert alert.severity.value == "warning"
+    assert "forex" in alert.title.lower()
+    assert "not halted" in alert.title.lower()
+    assert "daily loss limit breached" in alert.message
+
+
+@pytest.mark.asyncio
+async def test_loss_limit_check_paper_mode_no_alert_within_limits():
+    context = make_context()
+    context.settings.trading_mode = "paper"
+    context.settings.account_start_balance = 500.0
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+    context.trade_outcome_repository.pnls_since.return_value = [-10.0]  # -2%, within the 5% limit
+
+    await forex_loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.alert_manager.send.assert_not_awaited()

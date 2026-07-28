@@ -10,6 +10,7 @@ from forex.exposure import check_currency_concentration
 from forex.models import OpenForexPosition
 from forex.sizing import units_for_risk
 from indicators.volatility import atr
+from risk.halt_manager import evaluate_loss_limits
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
 from utils.time import is_forex_market_open
 
@@ -206,7 +207,11 @@ async def forex_loss_limit_check_cycle(context: AppContext, now: datetime) -> No
 
     Paper trading skips the weekly check, same reasoning as the equities
     side: see trading_loop.loss_limit_check_cycle and
-    paper_reset.paper_trading_daily_reset_cycle."""
+    paper_reset.paper_trading_daily_reset_cycle.
+
+    Only live trading actually halts on a breach; paper trading evaluates
+    the same thresholds but only notifies, same reasoning as the equities
+    side -- see trading_loop.loss_limit_check_cycle."""
     if context.forex_broker is None:
         return
     if await context.halt_manager.is_halted("forex"):
@@ -225,19 +230,33 @@ async def forex_loss_limit_check_cycle(context: AppContext, now: datetime) -> No
         week_start = day_start - timedelta(days=now.weekday())
         weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="forex")) / account.equity
 
-    triggered = await context.halt_manager.check_and_halt_on_loss_limits(
-        daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,
-        scope="forex",
-    )
-    if triggered:
-        await context.alert_manager.send(
-            Alert(
-                title="Trading halted (forex): loss limit breached",
-                message=f"daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
-                severity=Severity.CRITICAL,
-                timestamp=now,
-            )
+    if context.settings.trading_mode == "live":
+        triggered = await context.halt_manager.check_and_halt_on_loss_limits(
+            daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,
+            scope="forex",
         )
+        if triggered:
+            await context.alert_manager.send(
+                Alert(
+                    title="Trading halted (forex): loss limit breached",
+                    message=f"daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
+                    severity=Severity.CRITICAL,
+                    timestamp=now,
+                )
+            )
+    else:
+        breach_reason = evaluate_loss_limits(
+            daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct
+        )
+        if breach_reason is not None:
+            await context.alert_manager.send(
+                Alert(
+                    title="Loss limit breached (forex, paper trading — not halted)",
+                    message=f"{breach_reason}; daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
+                    severity=Severity.WARNING,
+                    timestamp=now,
+                )
+            )
 
 
 async def forex_progress_report_cycle(context: AppContext, now: datetime) -> None:

@@ -2,8 +2,28 @@ from datetime import datetime, timezone
 
 import pytest
 
-from risk.halt_manager import HaltManager
+from risk.halt_manager import HaltManager, evaluate_loss_limits
 from risk.halt_repository import HaltRepository
+
+
+def test_evaluate_loss_limits_returns_none_within_limits():
+    assert evaluate_loss_limits(daily_pnl_pct=-0.02, weekly_pnl_pct=-0.04, daily_limit_pct=0.05, weekly_limit_pct=0.10) is None
+
+
+def test_evaluate_loss_limits_reports_daily_breach_without_side_effects():
+    reason = evaluate_loss_limits(daily_pnl_pct=-0.06, weekly_pnl_pct=-0.02, daily_limit_pct=0.05, weekly_limit_pct=0.10)
+    assert reason is not None
+    assert "daily loss limit breached" in reason
+
+
+def test_evaluate_loss_limits_reports_weekly_breach():
+    reason = evaluate_loss_limits(daily_pnl_pct=-0.01, weekly_pnl_pct=-0.11, daily_limit_pct=0.05, weekly_limit_pct=0.10)
+    assert reason is not None
+    assert "weekly loss limit breached" in reason
+
+
+def test_evaluate_loss_limits_ignores_gains():
+    assert evaluate_loss_limits(daily_pnl_pct=0.10, weekly_pnl_pct=0.20, daily_limit_pct=0.05, weekly_limit_pct=0.10) is None
 
 
 @pytest.mark.asyncio

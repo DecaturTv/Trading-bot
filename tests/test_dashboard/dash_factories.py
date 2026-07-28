@@ -28,12 +28,12 @@ def make_account(equity=10000.0, cash=10000.0, buying_power=10000.0):
 
 def make_position_record(
     symbol="AAPL", qty=2, entry_cost=500.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0,
-    expiration=date(2026, 9, 18),
+    reversal_streak=0, direction=TradeDirection.BULLISH, expiration=date(2026, 9, 18),
 ):
     return OpenPositionRecord(
         symbol=symbol,
         strategy_type=StrategyType.LONG_CALL,
-        direction=TradeDirection.BULLISH,
+        direction=direction,
         entry_date=date(2026, 7, 1),
         legs=[
             PersistedLeg(
@@ -43,19 +43,22 @@ def make_position_record(
         ],
         state=PositionState(
             symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out,
-            peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak,
+            peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak, reversal_streak=reversal_streak,
         ),
     )
 
 
-def make_stock_position_record(symbol="AAPL", qty=10, entry_cost=150.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0):
+def make_stock_position_record(
+    symbol="AAPL", qty=10, entry_cost=150.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0,
+    reversal_streak=0, direction=TradeDirection.BULLISH,
+):
     return OpenStockPositionRecord(
         symbol=symbol,
-        direction=TradeDirection.BULLISH,
+        direction=direction,
         entry_date=date(2026, 7, 1),
         state=PositionState(
             symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out,
-            peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak,
+            peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak, reversal_streak=reversal_streak,
         ),
     )
 
@@ -88,6 +91,11 @@ def make_context(**overrides) -> AppContext:
         option_max_dte_deviation_days=30,
         daily_loss_limit_pct=0.05,
         weekly_loss_limit_pct=0.10,
+        # 1 on purpose: most entry-cycle fixtures expect a qualifying signal
+        # to act on the first scan. test_stock_loop.py/test_trading_loop.py
+        # have dedicated tests that override this to exercise the
+        # confirmation-persistence gate itself.
+        signal_confirmation_count=1,
         kelly_fraction=0.25,
         forex_confidence_threshold=92,
         forex_risk_pct_per_trade=0.02,
@@ -100,6 +108,14 @@ def make_context(**overrides) -> AppContext:
     ctx.broker.get_account.return_value = make_account()
     ctx.broker.get_positions.return_value = []
     ctx.bars_repository = AsyncMock()
+    # Empty by default so the reversal-exit signal lookup in position
+    # management cycles (_current_signal_direction) sees insufficient bar
+    # history and skips the check (current_direction=None) rather than
+    # exploding on a bare MagicMock -- existing management-cycle tests that
+    # don't care about reversal exits get the old stop-loss/scale-out/
+    # trailing-only behavior unchanged. Tests exercising reversal exits
+    # override this explicitly.
+    ctx.bars_repository.get_bars.return_value = []
     ctx.ingestion_service = AsyncMock()
     ctx.universe_manager = AsyncMock()
     ctx.universe_manager.get_universe.return_value = []
@@ -114,6 +130,7 @@ def make_context(**overrides) -> AppContext:
     ctx.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1,
     )
     ctx.position_repository = AsyncMock()
     ctx.position_repository.get.return_value = None
@@ -121,6 +138,8 @@ def make_context(**overrides) -> AppContext:
     ctx.stock_position_repository = AsyncMock()
     ctx.stock_position_repository.get.return_value = None
     ctx.stock_position_repository.get_all.return_value = []
+    ctx.signal_confirmation_repository = AsyncMock()
+    ctx.signal_confirmation_repository.get.return_value = None
     ctx.equities_entry_lock = asyncio.Lock()
     ctx.trade_outcome_repository = AsyncMock()
     ctx.trade_outcome_repository.recent_pnls.return_value = []

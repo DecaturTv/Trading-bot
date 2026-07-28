@@ -7,11 +7,12 @@ from trade_management.models import PositionState
 
 from .models import OpenStockPositionRecord
 
-_COLUMNS = "symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak"
+_COLUMNS = "symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak"
 
 _UPSERT_SQL = """
-INSERT INTO stock_positions (symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+INSERT INTO stock_positions
+    (symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 ON CONFLICT (symbol) DO UPDATE SET
     direction = EXCLUDED.direction,
     entry_date = EXCLUDED.entry_date,
@@ -20,6 +21,7 @@ ON CONFLICT (symbol) DO UPDATE SET
     scaled_out = EXCLUDED.scaled_out,
     peak_gain_pct = EXCLUDED.peak_gain_pct,
     stop_loss_streak = EXCLUDED.stop_loss_streak,
+    reversal_streak = EXCLUDED.reversal_streak,
     updated_at = EXCLUDED.updated_at
 """
 
@@ -40,6 +42,7 @@ def _row_to_record(row) -> OpenStockPositionRecord:
             scaled_out=row["scaled_out"],
             peak_gain_pct=row["peak_gain_pct"],
             stop_loss_streak=row["stop_loss_streak"],
+            reversal_streak=row["reversal_streak"],
         ),
     )
 
@@ -64,6 +67,7 @@ class StockPositionRepository:
                 record.state.scaled_out,
                 record.state.peak_gain_pct,
                 record.state.stop_loss_streak,
+                record.state.reversal_streak,
                 updated_at,
             )
 

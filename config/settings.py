@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     # quote — the underlying hadn't actually confirmed a move against the
     # position. See project memory.
     stop_loss_confirmation_count: int = 2
+    # Require a trade signal (entry, or a reversal against an open position)
+    # to hold in the same direction for this many consecutive scan/check
+    # cycles before acting on it — a single-tick whipsaw shouldn't be enough
+    # to open or reverse a position. Added 2026-07-28 after two consecutive
+    # days of severe daily-loss-limit breaches traced to noisy single-scan
+    # signal flips. Applies to both new entries and the reversal-exit check
+    # on open positions (see TradeManagementConfig.reversal_confirmation_count).
+    signal_confirmation_count: int = 3
 
     # Option selection for the live entry loop
     option_target_delta: float = 0.15
@@ -195,11 +203,11 @@ class Settings(BaseSettings):
             raise ValueError("min_trading_days_before_expiry must be >= 0")
         return v
 
-    @field_validator("stop_loss_confirmation_count")
+    @field_validator("stop_loss_confirmation_count", "signal_confirmation_count")
     @classmethod
     def _validate_stop_loss_confirmation_count(cls, v: int) -> int:
         if v < 1:
-            raise ValueError("stop_loss_confirmation_count must be >= 1")
+            raise ValueError("confirmation counts must be >= 1")
         return v
 
     @field_validator("option_max_dte_deviation_days")

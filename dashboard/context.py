@@ -19,6 +19,8 @@ from data.database import Database
 from data.ingestion import BarIngestionService
 from data.schema import apply_schema
 from decision_engine.scoring import FOREX_WEIGHTS, WeightedFactorModel
+from decision_engine.signal_confirmation_repository import SignalConfirmationRepository
+from decision_engine.signal_confirmation_schema import apply_signal_confirmation_schema
 from execution.executor import OrderExecutor
 from forex.oanda_adapter import OandaAdapter
 from forex.position_repository import ForexPositionRepository
@@ -63,6 +65,7 @@ class AppContext:
     trade_management_config: TradeManagementConfig
     position_repository: PositionStateRepository
     stock_position_repository: StockPositionRepository
+    signal_confirmation_repository: SignalConfirmationRepository
     # Serializes the commit step (pre-trade check -> size -> submit order ->
     # persist position) of every equities entry -- options across all
     # timeframes (5m/15m/1h/1d) and the stock entry cycle share one Alpaca
@@ -98,6 +101,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     await apply_forex_position_schema(pool)
     await apply_stock_position_schema(pool)
     await apply_congress_schema(pool)
+    await apply_signal_confirmation_schema(pool)
 
     broker = broker or AlpacaAdapter.from_settings(settings)
 
@@ -123,9 +127,11 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         trailing_stop_pct=settings.trailing_stop_pct,
         min_trading_days_before_expiry=settings.min_trading_days_before_expiry,
         stop_loss_confirmation_count=settings.stop_loss_confirmation_count,
+        reversal_confirmation_count=settings.signal_confirmation_count,
     )
     position_repository = PositionStateRepository(pool)
     stock_position_repository = StockPositionRepository(pool)
+    signal_confirmation_repository = SignalConfirmationRepository(pool)
     equities_entry_lock = asyncio.Lock()
     trade_outcome_repository = TradeOutcomeRepository(pool)
     feature_store_repository = FeatureStoreRepository(pool)
@@ -165,6 +171,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         trade_management_config=trade_management_config,
         position_repository=position_repository,
         stock_position_repository=stock_position_repository,
+        signal_confirmation_repository=signal_confirmation_repository,
         equities_entry_lock=equities_entry_lock,
         trade_outcome_repository=trade_outcome_repository,
         feature_store_repository=feature_store_repository,

@@ -5,11 +5,13 @@ from datetime import datetime, timedelta
 
 from alerts.models import Alert, Severity
 from broker.models import MultiLegOrderRequest, OptionRight
+from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
 from ml.trade_outcomes import get_live_trade_statistics
 from options.models import OptionLeg, OptionStrategy
 from options.selection import select_expiration, select_strike_by_delta
 from options.strategy_builders import build_long_call, build_long_put
+from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
 from trade_management.close_order_builder import build_close_order_request
@@ -37,6 +39,7 @@ _LOOKBACK_DAYS_BY_TIMEFRAME = {
     "15Min": 10,
     "5Min": 5,
 }
+_SIGNAL_VEHICLE = "options"
 
 EventCallback = Callable[[dict], Awaitable[None]] | None
 
@@ -91,6 +94,23 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
     )
     if not signal.meets_threshold or signal.direction is TradeDirection.NEUTRAL:
+        await context.signal_confirmation_repository.clear(symbol, _SIGNAL_VEHICLE, timeframe)
+        return
+
+    # Require the signal to hold for signal_confirmation_count consecutive
+    # scans (on this timeframe) before acting on it -- a single noisy tick
+    # shouldn't be enough to open a position. See config/settings.py
+    # signal_confirmation_count.
+    confirmation = await context.signal_confirmation_repository.get(symbol, _SIGNAL_VEHICLE, timeframe)
+    previous_direction = confirmation.direction if confirmation else None
+    previous_streak = confirmation.streak if confirmation else 0
+    streak = update_streak(signal.direction, previous_direction, previous_streak)
+    await context.signal_confirmation_repository.upsert(symbol, _SIGNAL_VEHICLE, timeframe, signal.direction, streak, now)
+    if not is_confirmed(streak, context.settings.signal_confirmation_count):
+        logger.info(
+            "entry cycle (%s) skipped %s: signal %s met threshold but awaiting confirmation (%d/%d)",
+            timeframe, symbol, signal.direction.value, streak, context.settings.signal_confirmation_count,
+        )
         return
 
     right = OptionRight.CALL if signal.direction is TradeDirection.BULLISH else OptionRight.PUT
@@ -202,6 +222,7 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         )
         await context.position_repository.upsert(record, updated_at=now)
 
+    await context.signal_confirmation_repository.clear(symbol, _SIGNAL_VEHICLE, timeframe)
     await context.alert_manager.send(
         Alert(
             title=f"Opened {strategy.strategy_type.value} on {symbol}",
@@ -232,6 +253,32 @@ async def position_management_cycle(context: AppContext, now: datetime, on_event
             logger.exception("position management failed for %s", record.symbol)
 
 
+async def _current_signal_direction(context: AppContext, symbol: str, now: datetime) -> TradeDirection | None:
+    """Re-scores symbol's current daily signal for the reversal-exit check on
+    an open position. Returns None (skip the check this cycle) if there
+    isn't enough bar history yet; NEUTRAL if the signal doesn't meet the
+    confidence threshold, so a low-conviction flicker doesn't count as a
+    confirmed reversal any more than it would count as a confirmed entry.
+    Always uses the daily timeframe regardless of which intraday cycle
+    originally opened the position -- OpenPositionRecord doesn't track that,
+    and daily trend is a reasonable, simpler basis for "has the thesis
+    actually reversed" than re-deriving the entry timeframe."""
+    await context.ingestion_service.ingest_incremental(symbol, "1Day", end=now)
+    bars = await context.bars_repository.get_bars(symbol, "1Day", now - timedelta(days=_BARS_LOOKBACK_DAYS), now)
+    if len(bars) < _MIN_BARS_FOR_SIGNAL:
+        return None
+
+    scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, bars)) is not None]
+    congress_trades = await context.congress_trade_manager.get_recent_trades(
+        symbol, now, lookback_days=context.settings.congress_lookback_days
+    )
+    signal = context.decision_model.score(
+        symbol, bars, scan_hits, context.settings.confidence_threshold,
+        congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
+    )
+    return signal.direction if signal.meets_threshold else TradeDirection.NEUTRAL
+
+
 async def _manage_position(context: AppContext, record: OpenPositionRecord, now: datetime, on_event: EventCallback) -> None:
     current_contracts = await _current_contracts_for_legs(context, record)
     if len(current_contracts) < len(record.legs):
@@ -251,10 +298,15 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
     nearest_expiration = min(leg.expiration for leg in record.legs)
     dte = trading_days_until(nearest_expiration, now.date())
 
-    decision = evaluate_exit(record.state, current_value, dte, context.trade_management_config)
+    current_direction = await _current_signal_direction(context, record.symbol, now)
+
+    decision = evaluate_exit(
+        record.state, current_value, dte, context.trade_management_config,
+        current_direction=current_direction, entry_direction=record.direction,
+    )
     if decision.action is ExitAction.NONE:
-        if decision.stop_loss_streak != record.state.stop_loss_streak:
-            updated_state = replace(record.state, stop_loss_streak=decision.stop_loss_streak)
+        if decision.stop_loss_streak != record.state.stop_loss_streak or decision.reversal_streak != record.state.reversal_streak:
+            updated_state = replace(record.state, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak)
             await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
         return
 
@@ -274,11 +326,12 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
         current_gain_pct = (current_value - record.state.entry_cost_per_unit) / record.state.entry_cost_per_unit
         peak = max(record.state.peak_gain_pct, current_gain_pct)
         updated_state = replace(
-            record.state, qty=remaining, scaled_out=True, peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak
+            record.state, qty=remaining, scaled_out=True,
+            peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
         )
         await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
 
-    severity = Severity.WARNING if decision.action is ExitAction.STOP_LOSS else Severity.INFO
+    severity = Severity.WARNING if decision.action in (ExitAction.STOP_LOSS, ExitAction.REVERSAL_EXIT) else Severity.INFO
     await context.alert_manager.send(
         Alert(title=f"{decision.action.value} on {record.symbol}", message=f"{decision.reason} pnl={pnl:.2f}", severity=severity, timestamp=now)
     )
@@ -305,9 +358,16 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
     Paper trading skips the weekly check (see paper_trading_daily_reset_cycle,
     which auto-clears any halt once a day) -- the point of paper trading is
     to take a bad day, learn from it, and start the next one clean, not
-    carry a rolling weekly drag from bugs already fixed. Live trading keeps
-    the full daily+weekly protection: once real capital is on the line, a
-    bad week matters even the day after a good one.
+    carry a rolling weekly drag from bugs already fixed.
+
+    Only live trading actually halts on a breach. Paper trading evaluates
+    the exact same daily_loss_limit_pct/weekly_loss_limit_pct thresholds but
+    only notifies (what would have halted, and why) -- there's no real
+    capital to protect, and letting a bad paper day keep running gives more
+    signal on whether a fix (e.g. the reversal-confirmation change) actually
+    helps than cutting the day short would. Live trading keeps the full
+    daily+weekly protection: once real capital is on the line, a bad week
+    matters even the day after a good one.
     """
     if await context.halt_manager.is_halted("equities"):
         return
@@ -325,19 +385,33 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
         week_start = day_start - timedelta(days=now.weekday())
         weekly_pnl_pct = sum(await context.trade_outcome_repository.pnls_since(week_start, asset_class="equities")) / account.equity
 
-    triggered = await context.halt_manager.check_and_halt_on_loss_limits(
-        daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,
-        scope="equities",
-    )
-    if triggered:
-        await context.alert_manager.send(
-            Alert(
-                title="Trading halted (equities): loss limit breached",
-                message=f"daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
-                severity=Severity.CRITICAL,
-                timestamp=now,
-            )
+    if context.settings.trading_mode == "live":
+        triggered = await context.halt_manager.check_and_halt_on_loss_limits(
+            daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct, now,
+            scope="equities",
         )
+        if triggered:
+            await context.alert_manager.send(
+                Alert(
+                    title="Trading halted (equities): loss limit breached",
+                    message=f"daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
+                    severity=Severity.CRITICAL,
+                    timestamp=now,
+                )
+            )
+    else:
+        breach_reason = evaluate_loss_limits(
+            daily_pnl_pct, weekly_pnl_pct, context.settings.daily_loss_limit_pct, context.settings.weekly_loss_limit_pct
+        )
+        if breach_reason is not None:
+            await context.alert_manager.send(
+                Alert(
+                    title="Loss limit breached (equities, paper trading — not halted)",
+                    message=f"{breach_reason}; daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
+                    severity=Severity.WARNING,
+                    timestamp=now,
+                )
+            )
 
 
 async def progress_report_cycle(context: AppContext, now: datetime) -> None:

@@ -1,13 +1,15 @@
 import pytest
 from tm_factories import make_config
 
+from decision_engine.models import TradeDirection
 from trade_management.exit_rules import evaluate_exit
 from trade_management.models import ExitAction, PositionState, TradeManagementConfig
 
 
 def make_position(**overrides):
     defaults = dict(
-        symbol="AAPL", qty=4, entry_cost_per_unit=500.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0
+        symbol="AAPL", qty=4, entry_cost_per_unit=500.0, scaled_out=False, peak_gain_pct=0.0,
+        stop_loss_streak=0, reversal_streak=0,
     )
     defaults.update(overrides)
     return PositionState(**defaults)
@@ -62,6 +64,128 @@ def test_stop_loss_streak_resets_once_price_recovers():
 
     assert decision.action is ExitAction.NONE
     assert decision.stop_loss_streak == 0
+
+
+def test_no_reversal_exit_when_current_direction_matches_entry_direction():
+    config = make_config(reversal_confirmation_count=1)
+    position = make_position()
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config,
+        current_direction=TradeDirection.BULLISH, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.NONE
+    assert decision.reversal_streak == 0
+
+
+def test_reversal_exit_triggers_when_confirmation_count_is_one():
+    config = make_config(reversal_confirmation_count=1)
+    position = make_position()
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config,
+        current_direction=TradeDirection.BEARISH, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.REVERSAL_EXIT
+    assert decision.qty_to_close == position.qty
+    assert decision.reversal_streak == 1
+
+
+def test_reversal_exit_waits_for_confirmation_before_closing():
+    config = make_config(reversal_confirmation_count=3)
+    position = make_position(reversal_streak=0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config,
+        current_direction=TradeDirection.BEARISH, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.NONE
+    assert decision.reversal_streak == 1
+
+
+def test_reversal_exit_closes_once_confirmation_count_reached():
+    config = make_config(reversal_confirmation_count=3)
+    position = make_position(reversal_streak=2)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config,
+        current_direction=TradeDirection.BEARISH, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.REVERSAL_EXIT
+    assert decision.qty_to_close == position.qty
+    assert decision.reversal_streak == 3
+
+
+def test_reversal_streak_resets_once_signal_agrees_with_entry_again():
+    config = make_config(reversal_confirmation_count=3)
+    position = make_position(reversal_streak=2)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config,
+        current_direction=TradeDirection.BULLISH, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.NONE
+    assert decision.reversal_streak == 0
+
+
+def test_neutral_current_direction_does_not_count_as_opposed():
+    config = make_config(reversal_confirmation_count=1)
+    position = make_position(reversal_streak=0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config,
+        current_direction=TradeDirection.NEUTRAL, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.NONE
+    assert decision.reversal_streak == 0
+
+
+def test_reversal_check_skipped_when_direction_not_provided():
+    config = make_config(reversal_confirmation_count=1)
+    position = make_position(reversal_streak=0)
+
+    decision = evaluate_exit(position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.NONE
+    assert decision.reversal_streak == 0
+
+
+def test_stop_loss_takes_priority_over_reversal_exit_when_both_confirmed():
+    config = make_config(stop_loss_pct=0.50, stop_loss_confirmation_count=1, reversal_confirmation_count=1)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=240.0, trading_days_to_expiry=10, config=config,
+        current_direction=TradeDirection.BEARISH, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.STOP_LOSS
+
+
+def test_expiry_exit_takes_priority_over_reversal_exit():
+    config = make_config(min_trading_days_before_expiry=2, reversal_confirmation_count=1)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=520.0, trading_days_to_expiry=1, config=config,
+        current_direction=TradeDirection.BEARISH, entry_direction=TradeDirection.BULLISH,
+    )
+
+    assert decision.action is ExitAction.EXPIRY_EXIT
+
+
+def test_config_rejects_non_positive_reversal_confirmation_count():
+    with pytest.raises(ValueError):
+        TradeManagementConfig(
+            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=0,
+        )
 
 
 def test_scale_out_triggers_at_profit_target_and_closes_configured_fraction():
@@ -119,7 +243,7 @@ def test_config_rejects_non_positive_stop_loss():
     with pytest.raises(ValueError):
         TradeManagementConfig(
             stop_loss_pct=0.0, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
-            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
         )
 
 
@@ -127,7 +251,7 @@ def test_config_rejects_invalid_scale_out_fraction():
     with pytest.raises(ValueError):
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=1.5, trailing_stop_pct=0.2,
-            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
         )
 
 
@@ -135,7 +259,7 @@ def test_config_rejects_negative_min_dte():
     with pytest.raises(ValueError):
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
-            min_trading_days_before_expiry=-1, stop_loss_confirmation_count=1,
+            min_trading_days_before_expiry=-1, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
         )
 
 
@@ -143,5 +267,5 @@ def test_config_rejects_non_positive_stop_loss_confirmation_count():
     with pytest.raises(ValueError):
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
-            min_trading_days_before_expiry=2, stop_loss_confirmation_count=0,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=0, reversal_confirmation_count=1,
         )
