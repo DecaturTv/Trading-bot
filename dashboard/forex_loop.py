@@ -256,11 +256,26 @@ async def forex_progress_report_cycle(context: AppContext, now: datetime) -> Non
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="forex"))
+    closed_today = [
+        trade
+        for trade in await context.trade_outcome_repository.recent_trades(limit=50, asset_class="forex")
+        if trade["closed_at"] >= day_start
+    ]
 
-    message = (
+    lines = [
         f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
         f"open_positions={len(positions)} status={'HALTED' if halted else 'running'}"
-    )
+    ]
+
+    if positions:
+        lines.append("\nOpen positions:")
+        lines.extend(f"- {p.pair} {p.side.value} units={p.units} entry={p.entry_price:.5f}" for p in positions)
+
+    if closed_today:
+        lines.append("\nClosed today:")
+        lines.extend(f"- {trade['symbol']} pnl={trade['pnl']:+.2f}" for trade in closed_today)
+
+    message = "\n".join(lines)
     await context.progress_notifier.send(
         Alert(title="Forex progress", message=message, severity=Severity.INFO, timestamp=now)
     )

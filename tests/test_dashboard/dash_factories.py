@@ -125,6 +125,7 @@ def make_context(**overrides) -> AppContext:
     ctx.trade_outcome_repository = AsyncMock()
     ctx.trade_outcome_repository.recent_pnls.return_value = []
     ctx.trade_outcome_repository.pnls_since.return_value = []
+    ctx.trade_outcome_repository.recent_trades.return_value = []
     ctx.feature_store_repository = AsyncMock()
     ctx.feature_store_repository.record_snapshot.return_value = 1
     ctx.alert_manager = AsyncMock()

@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_forex_position
@@ -334,6 +334,46 @@ async def test_progress_report_sends_status_message():
     assert "12,345.67" in alert.message
     assert "open_positions=1" in alert.message
     assert "status=running" in alert.message
+
+
+@pytest.mark.asyncio
+async def test_progress_report_lists_open_and_closed_positions():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=500.0)
+    context.forex_position_repository.get_all.return_value = [
+        make_forex_position(pair="NZD_HKD", side=OrderSide.SELL, units=700, entry_price=4.54399)
+    ]
+    context.trade_outcome_repository.recent_trades.return_value = [
+        {"symbol": "USD_CHF", "closed_at": MARKET_OPEN_TUESDAY, "pnl": -12.3853, "asset_class": "forex", "details": {}},
+        {
+            "symbol": "OLD_PAIR",
+            "closed_at": MARKET_OPEN_TUESDAY - timedelta(days=1),
+            "pnl": 5.0,
+            "asset_class": "forex",
+            "details": {},
+        },
+    ]
+
+    await forex_progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "Open positions:" in alert.message
+    assert "NZD_HKD sell units=700 entry=4.54399" in alert.message
+    assert "Closed today:" in alert.message
+    assert "USD_CHF pnl=-12.39" in alert.message
+    assert "OLD_PAIR" not in alert.message  # closed yesterday, excluded
+
+
+@pytest.mark.asyncio
+async def test_progress_report_omits_sections_when_nothing_to_show():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=500.0)
+
+    await forex_progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "Open positions:" not in alert.message
+    assert "Closed today:" not in alert.message
 
 
 @pytest.mark.asyncio

@@ -358,12 +358,33 @@ async def progress_report_cycle(context: AppContext, now: datetime) -> None:
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="equities"))
+    closed_today = [
+        trade
+        for trade in await context.trade_outcome_repository.recent_trades(limit=50, asset_class="equities")
+        if trade["closed_at"] >= day_start
+    ]
 
-    message = (
+    lines = [
         f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
         f"open_options_positions={len(positions)} open_stock_positions={len(stock_positions)} "
         f"status={'HALTED' if halted else 'running'}"
-    )
+    ]
+
+    if positions or stock_positions:
+        lines.append("\nOpen positions:")
+        lines.extend(
+            f"- {p.symbol} ({p.strategy_type.value}) qty={p.state.qty} entry=${p.state.entry_cost_per_unit:.2f}"
+            for p in positions
+        )
+        lines.extend(
+            f"- {p.symbol} (stock) qty={p.state.qty} entry=${p.state.entry_cost_per_unit:.2f}" for p in stock_positions
+        )
+
+    if closed_today:
+        lines.append("\nClosed today:")
+        lines.extend(f"- {trade['symbol']} pnl={trade['pnl']:+.2f}" for trade in closed_today)
+
+    message = "\n".join(lines)
     await context.progress_notifier.send(
         Alert(title="Stocks progress", message=message, severity=Severity.INFO, timestamp=now)
     )

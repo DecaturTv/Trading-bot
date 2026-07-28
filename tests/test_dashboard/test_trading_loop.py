@@ -2,7 +2,7 @@ import asyncio
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
-from dash_factories import make_account, make_bars, make_context, make_position_record
+from dash_factories import make_account, make_bars, make_context, make_position_record, make_stock_position_record
 
 from broker.models import OptionContract, OptionGreeks, OptionRight
 from dashboard.trading_loop import entry_cycle, loss_limit_check_cycle, position_management_cycle, progress_report_cycle
@@ -529,3 +529,45 @@ async def test_progress_report_reports_halted_status():
 
     alert = context.progress_notifier.send.call_args.args[0]
     assert "status=HALTED" in alert.message
+
+
+@pytest.mark.asyncio
+async def test_progress_report_lists_open_and_closed_positions():
+    context = make_context()
+    context.position_repository.get_all.return_value = [
+        make_position_record(symbol="SOFI", qty=10, entry_cost=21.0)
+    ]
+    context.stock_position_repository.get_all.return_value = [
+        make_stock_position_record(symbol="TSLA", qty=5, entry_cost=300.0)
+    ]
+    context.trade_outcome_repository.recent_trades.return_value = [
+        {"symbol": "ACI", "closed_at": MARKET_OPEN_TUESDAY, "pnl": -115.0, "asset_class": "equities", "details": {}},
+        {
+            "symbol": "OLD",
+            "closed_at": MARKET_OPEN_TUESDAY - timedelta(days=1),
+            "pnl": 999.0,
+            "asset_class": "equities",
+            "details": {},
+        },
+    ]
+
+    await progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "Open positions:" in alert.message
+    assert "SOFI (long_call) qty=10 entry=$21.00" in alert.message
+    assert "TSLA (stock) qty=5 entry=$300.00" in alert.message
+    assert "Closed today:" in alert.message
+    assert "ACI pnl=-115.00" in alert.message
+    assert "OLD" not in alert.message  # closed yesterday, excluded
+
+
+@pytest.mark.asyncio
+async def test_progress_report_omits_sections_when_nothing_to_show():
+    context = make_context()
+
+    await progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "Open positions:" not in alert.message
+    assert "Closed today:" not in alert.message
