@@ -30,6 +30,19 @@ DEFAULT_WEIGHTS = {
     "congress": 0.20,
 }
 
+# Forex-specific: unusual_volume excluded. Replaying the 24 fully-logged
+# forex trades from 2026-07-23/24 against real OANDA candle history showed
+# this factor is anti-correlated with outcome there -- it agreed with the
+# trade's eventual direction on 9/9 losers and 0/4 winners. OANDA's "volume"
+# is synthetic tick count, not real traded volume; a tick-volume spike on an
+# hourly FX candle tends to mark a climax/exhaustion move, not the start of
+# a breakout the way a real equity volume spike often does. Weight simply
+# drops to 0 rather than being deleted from the dict -- WeightedFactorModel
+# already excludes zero-weight factors and renormalizes over what's left,
+# the same mechanism used for a factor that's unavailable. See project
+# memory on forex performance.
+FOREX_WEIGHTS = {**DEFAULT_WEIGHTS, "unusual_volume": 0.0}
+
 _FACTOR_FUNCTIONS = {
     "momentum": lambda bars, scan_hits, congress_trades, tracked_members: momentum_factor(bars),
     "trend": lambda bars, scan_hits, congress_trades, tracked_members: trend_factor(bars),

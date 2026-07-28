@@ -19,3 +19,8 @@ class OpenForexPosition:
     take_profit_price: float
     oanda_trade_id: str
     opened_at: datetime
+    # Links to ml_feature_snapshots for the factor breakdown behind this
+    # trade's entry decision, so outcomes can be attributed back to which
+    # factor drove it (see ml/feature_store_repository.py). None for
+    # positions opened before this was added.
+    feature_snapshot_id: int | None = None

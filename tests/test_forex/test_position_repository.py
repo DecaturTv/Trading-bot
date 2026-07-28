@@ -7,10 +7,11 @@ from forex.models import OpenForexPosition
 from forex.position_repository import ForexPositionRepository
 
 
-def make_position(pair="EUR_USD", oanda_trade_id="1"):
+def make_position(pair="EUR_USD", oanda_trade_id="1", feature_snapshot_id=None):
     return OpenForexPosition(
         pair=pair, side=OrderSide.BUY, units=1000, entry_price=1.1000, stop_loss_price=1.0950,
         take_profit_price=1.1100, oanda_trade_id=oanda_trade_id, opened_at=datetime.now(timezone.utc),
+        feature_snapshot_id=feature_snapshot_id,
     )
 
 
@@ -51,6 +52,16 @@ async def test_get_all_returns_all_tracked_pairs(pool):
     all_positions = await repo.get_all()
 
     assert {p.pair for p in all_positions} == {"EUR_USD", "GBP_USD"}
+
+
+@pytest.mark.asyncio
+async def test_feature_snapshot_id_round_trips(pool):
+    repo = ForexPositionRepository(pool)
+    await repo.upsert(make_position(feature_snapshot_id=7))
+
+    fetched = await repo.get("EUR_USD")
+
+    assert fetched.feature_snapshot_id == 7
 
 
 @pytest.mark.asyncio

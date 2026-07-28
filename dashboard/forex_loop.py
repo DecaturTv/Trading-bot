@@ -73,7 +73,7 @@ async def _maybe_enter_forex(
         return
 
     scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(pair, bars)) is not None]
-    signal = context.decision_model.score(pair, bars, scan_hits, context.settings.forex_confidence_threshold)
+    signal = context.forex_decision_model.score(pair, bars, scan_hits, context.settings.forex_confidence_threshold)
     if not signal.meets_threshold or signal.direction is TradeDirection.NEUTRAL:
         return
 
@@ -110,6 +110,11 @@ async def _maybe_enter_forex(
         )
         return
 
+    factor_values = {f.name: f.value for f in signal.factors}
+    snapshot_id = await context.feature_store_repository.record_snapshot(
+        pair, now, factor_values, signal.confidence, signal.direction.value
+    )
+
     trade_id = await context.forex_broker.submit_market_order(pair, units, side, stop_loss_price, take_profit_price)
 
     position = OpenForexPosition(
@@ -121,6 +126,7 @@ async def _maybe_enter_forex(
         take_profit_price=take_profit_price,
         oanda_trade_id=trade_id,
         opened_at=now,
+        feature_snapshot_id=snapshot_id,
     )
     await context.forex_position_repository.upsert(position)
 
@@ -179,6 +185,8 @@ async def _reconcile_forex_position(
         "held_seconds": (now - position.opened_at).total_seconds(),
     }
     await context.trade_outcome_repository.record_outcome(position.pair, now, pnl, asset_class="forex", details=details)
+    if position.feature_snapshot_id is not None:
+        await context.feature_store_repository.record_outcome(position.feature_snapshot_id, pnl)
     await context.forex_position_repository.delete(position.pair)
 
     severity = Severity.WARNING if pnl < 0 else Severity.INFO

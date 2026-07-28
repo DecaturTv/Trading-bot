@@ -62,11 +62,12 @@ def make_stock_position_record(symbol="AAPL", qty=10, entry_cost=150.0, scaled_o
 
 def make_forex_position(
     pair="EUR_USD", side=OrderSide.BUY, units=1000, entry_price=1.1000, stop_loss_price=1.0950,
-    take_profit_price=1.1100, oanda_trade_id="123",
+    take_profit_price=1.1100, oanda_trade_id="123", feature_snapshot_id=None,
 ):
     return OpenForexPosition(
         pair=pair, side=side, units=units, entry_price=entry_price, stop_loss_price=stop_loss_price,
         take_profit_price=take_profit_price, oanda_trade_id=oanda_trade_id, opened_at=datetime.now(timezone.utc),
+        feature_snapshot_id=feature_snapshot_id,
     )
 
 
@@ -104,6 +105,7 @@ def make_context(**overrides) -> AppContext:
     ctx.universe_manager.get_universe.return_value = []
     ctx.scanner_service = AsyncMock()
     ctx.decision_model = MagicMock()
+    ctx.forex_decision_model = MagicMock()
     ctx.kelly_sizer = MagicMock()
     ctx.pre_trade_checker = AsyncMock()
     ctx.halt_manager = AsyncMock()
@@ -124,6 +126,7 @@ def make_context(**overrides) -> AppContext:
     ctx.trade_outcome_repository.recent_pnls.return_value = []
     ctx.trade_outcome_repository.pnls_since.return_value = []
     ctx.feature_store_repository = AsyncMock()
+    ctx.feature_store_repository.record_snapshot.return_value = 1
     ctx.alert_manager = AsyncMock()
     ctx.progress_notifier = AsyncMock()
     ctx.forex_broker = AsyncMock()

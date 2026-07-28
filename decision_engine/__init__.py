@@ -1,6 +1,6 @@
 from .factors import gap_factor, macd_factor, momentum_factor, trend_factor, unusual_volume_factor
 from .models import FactorScore, TradeDirection, TradeSignal
-from .scoring import DEFAULT_WEIGHTS, WeightedFactorModel
+from .scoring import DEFAULT_WEIGHTS, FOREX_WEIGHTS, WeightedFactorModel
 
 __all__ = [
     "gap_factor",
@@ -12,5 +12,6 @@ __all__ = [
     "TradeDirection",
     "TradeSignal",
     "DEFAULT_WEIGHTS",
+    "FOREX_WEIGHTS",
     "WeightedFactorModel",
 ]

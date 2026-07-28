@@ -95,6 +95,32 @@ def test_rejects_unknown_factor_name():
         WeightedFactorModel(weights={"covered_call_iv": 0.5})
 
 
+def test_forex_weights_zero_out_unusual_volume(monkeypatch):
+    import decision_engine.scoring as scoring_module
+
+    assert scoring_module.FOREX_WEIGHTS["unusual_volume"] == 0.0
+    # Every other weight matches DEFAULT_WEIGHTS unchanged.
+    for name, weight in scoring_module.DEFAULT_WEIGHTS.items():
+        if name != "unusual_volume":
+            assert scoring_module.FOREX_WEIGHTS[name] == weight
+
+
+def test_unusual_volume_excluded_from_forex_scoring(monkeypatch):
+    import decision_engine.scoring as scoring_module
+
+    # unusual_volume strongly bearish, everything else strongly bullish --
+    # with FOREX_WEIGHTS it should be excluded entirely (weight 0), so the
+    # score is a pure blend of the other factors with no bearish drag.
+    patch_factors(monkeypatch, momentum=1.0, trend=1.0, macd=1.0, unusual_volume=-1.0, gap=1.0, candlestick=1.0, congress=1.0)
+    model = WeightedFactorModel(weights=scoring_module.FOREX_WEIGHTS)
+
+    signal = model.score("EUR_USD", bars=[], scan_hits=[], confidence_threshold=10.0)
+
+    assert signal.confidence == pytest.approx(100.0)
+    assert signal.direction is TradeDirection.BULLISH
+    assert all(f.name != "unusual_volume" for f in signal.factors)
+
+
 def test_congress_factor_is_included_in_default_weights_and_blended(monkeypatch):
     # Every other factor bearish, congress alone bullish -- with congress's
     # real DEFAULT_WEIGHTS share (0.20) it shouldn't be enough to flip the

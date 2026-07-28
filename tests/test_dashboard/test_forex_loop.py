@@ -81,14 +81,14 @@ async def test_entry_cycle_skips_when_insufficient_candles():
 
     await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
 
-    context.decision_model.score.assert_not_called()
+    context.forex_decision_model.score.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_when_signal_does_not_meet_threshold():
     context = make_context()
     context.forex_broker.get_candles.return_value = make_bars(n=40)
-    context.decision_model.score.return_value = neutral_signal()
+    context.forex_decision_model.score.return_value = neutral_signal()
 
     await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
 
@@ -99,7 +99,7 @@ async def test_entry_cycle_skips_when_signal_does_not_meet_threshold():
 async def test_entry_cycle_happy_path_opens_position():
     context = make_context()
     context.forex_broker.get_candles.return_value = make_bars(n=40)
-    context.decision_model.score.return_value = bullish_signal()
+    context.forex_decision_model.score.return_value = bullish_signal()
     context.forex_broker.get_pricing.return_value = (1.0998, 1.1000)
     context.forex_broker.submit_market_order.return_value = "trade-1"
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
@@ -117,6 +117,15 @@ async def test_entry_cycle_happy_path_opens_position():
     assert events[0]["type"] == "forex_position_opened"
     assert events[0]["pair"] == "EUR_USD"
 
+    context.feature_store_repository.record_snapshot.assert_awaited_once()
+    snapshot_call = context.feature_store_repository.record_snapshot.call_args
+    assert snapshot_call.args[0] == "EUR_USD"
+    assert snapshot_call.args[2] == {"momentum": 0.9}
+    assert snapshot_call.args[3] == 95.0
+    assert snapshot_call.args[4] == "bullish"
+    persisted_position = context.forex_position_repository.upsert.call_args.args[0]
+    assert persisted_position.feature_snapshot_id == 1
+
 
 @pytest.mark.asyncio
 async def test_entry_cycle_converts_stop_distance_for_non_usd_quoted_pair():
@@ -129,7 +138,7 @@ async def test_entry_cycle_converts_stop_distance_for_non_usd_quoted_pair():
         lambda pair: make_forex_position(pair="USD_JPY") if pair == "USD_JPY" else None
     )
     context.forex_broker.get_candles.return_value = make_bars(n=40)
-    context.decision_model.score.return_value = TradeSignal(
+    context.forex_decision_model.score.return_value = TradeSignal(
         symbol="EUR_JPY", direction=TradeDirection.BULLISH, confidence=95.0,
         factors=[FactorScore(name="momentum", value=0.9, weight=1.0)], meets_threshold=True,
     )
@@ -160,7 +169,7 @@ async def test_entry_cycle_skips_pair_with_no_tradeable_conversion_pair():
     context = make_context()
     context.forex_broker.get_tradeable_pairs.return_value = ["EUR_JPY"]  # no JPY_USD/USD_JPY available
     context.forex_broker.get_candles.return_value = make_bars(n=40)
-    context.decision_model.score.return_value = TradeSignal(
+    context.forex_decision_model.score.return_value = TradeSignal(
         symbol="EUR_JPY", direction=TradeDirection.BULLISH, confidence=95.0,
         factors=[FactorScore(name="momentum", value=0.9, weight=1.0)], meets_threshold=True,
     )
@@ -249,6 +258,21 @@ async def test_position_management_reconciles_closed_position():
     context.alert_manager.send.assert_awaited_once()
     assert events[0]["type"] == "forex_position_closed"
     assert events[0]["pnl"] == 42.5
+    # No feature_snapshot_id on this position (default) -- nothing to label.
+    context.feature_store_repository.record_outcome.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_position_management_labels_feature_snapshot_on_reconcile():
+    context = make_context()
+    position = make_forex_position(pair="EUR_USD", oanda_trade_id="trade-1", feature_snapshot_id=7)
+    context.forex_position_repository.get_all.return_value = [position]
+    context.forex_broker.get_open_trade_ids.return_value = set()
+    context.forex_broker.get_trade_realized_pnl.return_value = -12.5
+
+    await forex_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.feature_store_repository.record_outcome.assert_awaited_once_with(7, -12.5)
 
 
 @pytest.mark.asyncio

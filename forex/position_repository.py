@@ -4,11 +4,11 @@ from broker.models import OrderSide
 
 from .models import OpenForexPosition
 
-_COLUMNS = "pair, side, units, entry_price, stop_loss_price, take_profit_price, oanda_trade_id, opened_at"
+_COLUMNS = "pair, side, units, entry_price, stop_loss_price, take_profit_price, oanda_trade_id, opened_at, feature_snapshot_id"
 
 _UPSERT_SQL = f"""
 INSERT INTO forex_positions ({_COLUMNS})
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 ON CONFLICT (pair) DO UPDATE SET
     side = EXCLUDED.side,
     units = EXCLUDED.units,
@@ -16,7 +16,8 @@ ON CONFLICT (pair) DO UPDATE SET
     stop_loss_price = EXCLUDED.stop_loss_price,
     take_profit_price = EXCLUDED.take_profit_price,
     oanda_trade_id = EXCLUDED.oanda_trade_id,
-    opened_at = EXCLUDED.opened_at
+    opened_at = EXCLUDED.opened_at,
+    feature_snapshot_id = EXCLUDED.feature_snapshot_id
 """
 
 _GET_SQL = f"SELECT {_COLUMNS} FROM forex_positions WHERE pair = $1"
@@ -34,6 +35,7 @@ def _row_to_record(row) -> OpenForexPosition:
         take_profit_price=row["take_profit_price"],
         oanda_trade_id=row["oanda_trade_id"],
         opened_at=row["opened_at"],
+        feature_snapshot_id=row["feature_snapshot_id"],
     )
 
 
@@ -56,6 +58,7 @@ class ForexPositionRepository:
                 position.take_profit_price,
                 position.oanda_trade_id,
                 position.opened_at,
+                position.feature_snapshot_id,
             )
 
     async def get(self, pair: str) -> OpenForexPosition | None:

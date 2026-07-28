@@ -18,7 +18,7 @@ from data.bars_repository import BarsRepository
 from data.database import Database
 from data.ingestion import BarIngestionService
 from data.schema import apply_schema
-from decision_engine.scoring import WeightedFactorModel
+from decision_engine.scoring import FOREX_WEIGHTS, WeightedFactorModel
 from execution.executor import OrderExecutor
 from forex.oanda_adapter import OandaAdapter
 from forex.position_repository import ForexPositionRepository
@@ -55,6 +55,7 @@ class AppContext:
     universe_manager: UniverseManager
     scanner_service: ScannerService
     decision_model: WeightedFactorModel
+    forex_decision_model: WeightedFactorModel
     kelly_sizer: KellySizer
     pre_trade_checker: PreTradeChecker
     halt_manager: HaltManager
@@ -107,6 +108,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     scanner_service = ScannerService(broker, universe_manager)
 
     decision_model = WeightedFactorModel()
+    forex_decision_model = WeightedFactorModel(weights=FOREX_WEIGHTS)
     kelly_sizer = KellySizer(kelly_fraction=settings.kelly_fraction)
 
     halt_manager = HaltManager(HaltRepository(pool))
@@ -155,6 +157,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         universe_manager=universe_manager,
         scanner_service=scanner_service,
         decision_model=decision_model,
+        forex_decision_model=forex_decision_model,
         kelly_sizer=kelly_sizer,
         pre_trade_checker=pre_trade_checker,
         halt_manager=halt_manager,
