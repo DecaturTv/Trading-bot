@@ -71,10 +71,24 @@ class Settings(BaseSettings):
     scale_out_fraction: float = 0.50
     trailing_stop_pct: float = 0.20
     min_trading_days_before_expiry: int = 2
+    # Require a stop-loss breach to hold for this many consecutive
+    # position-check cycles (position_check_interval_seconds apart) before
+    # closing. Added 2026-07-27 after the ACI trade closed on a single noisy
+    # quote — the underlying hadn't actually confirmed a move against the
+    # position. See project memory.
+    stop_loss_confirmation_count: int = 2
 
     # Option selection for the live entry loop
     option_target_delta: float = 0.15
     option_target_dte: int = 25
+    # Skip an entry if the closest available expiration is more than this
+    # many calendar days from option_target_dte — a symbol's chain may have
+    # nothing near the target, and select_expiration() always returns its
+    # closest match regardless of how far off that is. Without this, a
+    # ~25 DTE target can silently fall back to a several-days-out contract
+    # with far more theta/gamma risk than intended. Added 2026-07-27, same
+    # incident as stop_loss_confirmation_count above.
+    option_max_dte_deviation_days: int = 10
 
     # Autonomous trading loop
     autonomous_trading_enabled: bool = True
@@ -179,6 +193,20 @@ class Settings(BaseSettings):
     def _validate_min_dte(cls, v: int) -> int:
         if v < 0:
             raise ValueError("min_trading_days_before_expiry must be >= 0")
+        return v
+
+    @field_validator("stop_loss_confirmation_count")
+    @classmethod
+    def _validate_stop_loss_confirmation_count(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("stop_loss_confirmation_count must be >= 1")
+        return v
+
+    @field_validator("option_max_dte_deviation_days")
+    @classmethod
+    def _validate_option_max_dte_deviation_days(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("option_max_dte_deviation_days must be >= 0")
         return v
 
     @field_validator("option_target_delta")

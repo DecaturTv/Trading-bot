@@ -123,6 +123,8 @@ class BacktestEngine:
         decision = evaluate_exit(open_position.state, current_value, dte, self._tm_config)
 
         if decision.action is ExitAction.NONE:
+            if decision.stop_loss_streak != open_position.state.stop_loss_streak:
+                open_position.state = replace(open_position.state, stop_loss_streak=decision.stop_loss_streak)
             return equity, open_position
 
         closed_qty = decision.qty_to_close
@@ -149,7 +151,9 @@ class BacktestEngine:
 
         current_gain_pct = (current_value - open_position.state.entry_cost_per_unit) / open_position.state.entry_cost_per_unit
         peak = max(open_position.state.peak_gain_pct, current_gain_pct)
-        open_position.state = replace(open_position.state, qty=remaining, scaled_out=True, peak_gain_pct=peak)
+        open_position.state = replace(
+            open_position.state, qty=remaining, scaled_out=True, peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak
+        )
         return equity, open_position
 
     def _maybe_enter(self, symbol, window, current_bar, as_of, vol, equity, trades):

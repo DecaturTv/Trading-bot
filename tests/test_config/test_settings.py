@@ -62,6 +62,8 @@ def test_trade_management_defaults_match_confirmed_project_rules():
     assert settings.scale_out_fraction == pytest.approx(0.50)
     assert settings.trailing_stop_pct == pytest.approx(0.20)
     assert settings.min_trading_days_before_expiry == 2
+    assert settings.stop_loss_confirmation_count == 2
+    assert settings.option_max_dte_deviation_days == 10
 
 
 def test_autonomous_trading_enabled_by_default():
@@ -86,6 +88,8 @@ def test_dashboard_auth_token_unset_by_default():
         ("option_target_delta", 0.0),
         ("option_target_delta", 1.5),
         ("option_target_dte", 0),
+        ("stop_loss_confirmation_count", 0),
+        ("option_max_dte_deviation_days", -1),
         ("scan_interval_seconds", 0),
         ("position_check_interval_seconds", -1),
     ],

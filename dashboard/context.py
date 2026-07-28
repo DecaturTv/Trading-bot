@@ -120,6 +120,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         scale_out_fraction=settings.scale_out_fraction,
         trailing_stop_pct=settings.trailing_stop_pct,
         min_trading_days_before_expiry=settings.min_trading_days_before_expiry,
+        stop_loss_confirmation_count=settings.stop_loss_confirmation_count,
     )
     position_repository = PositionStateRepository(pool)
     stock_position_repository = StockPositionRepository(pool)

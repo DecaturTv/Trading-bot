@@ -9,9 +9,10 @@ def evaluate_exit(
     config: TradeManagementConfig,
 ) -> ExitDecision:
     """Pure decision function — evaluates one snapshot in time. Peak-gain
-    tracking for the trailing stop is caller-managed state (see
-    PositionStateRepository): this function doesn't mutate position, so the
-    caller must persist an updated peak_gain_pct between calls.
+    tracking for the trailing stop, and the stop-loss confirmation streak
+    below, are both caller-managed state (see PositionStateRepository): this
+    function doesn't mutate position, so the caller must persist the updated
+    peak_gain_pct/stop_loss_streak it returns between calls.
     """
     gain_pct = unrealized_gain_pct(position.entry_cost_per_unit, current_value_per_unit)
 
@@ -20,13 +21,34 @@ def evaluate_exit(
             action=ExitAction.EXPIRY_EXIT,
             qty_to_close=position.qty,
             reason=f"{trading_days_to_expiry} trading days to expiration <= minimum {config.min_trading_days_before_expiry}",
+            stop_loss_streak=0,
         )
 
     if gain_pct <= -config.stop_loss_pct:
+        streak = position.stop_loss_streak + 1
+        # Require the breach to hold across N consecutive checks before acting
+        # on it — a single noisy quote (wide bid/ask on a thin option) can
+        # otherwise trip the stop even though nothing about the underlying
+        # actually moved against the position. See project memory on the ACI
+        # trade that motivated this.
+        if streak >= config.stop_loss_confirmation_count:
+            return ExitDecision(
+                action=ExitAction.STOP_LOSS,
+                qty_to_close=position.qty,
+                reason=(
+                    f"unrealized loss {gain_pct:.1%} breached stop-loss -{config.stop_loss_pct:.1%} "
+                    f"for {streak}/{config.stop_loss_confirmation_count} consecutive checks"
+                ),
+                stop_loss_streak=streak,
+            )
         return ExitDecision(
-            action=ExitAction.STOP_LOSS,
-            qty_to_close=position.qty,
-            reason=f"unrealized loss {gain_pct:.1%} breached stop-loss -{config.stop_loss_pct:.1%}",
+            action=ExitAction.NONE,
+            qty_to_close=0,
+            reason=(
+                f"unrealized loss {gain_pct:.1%} breached stop-loss -{config.stop_loss_pct:.1%}, "
+                f"awaiting confirmation ({streak}/{config.stop_loss_confirmation_count})"
+            ),
+            stop_loss_streak=streak,
         )
 
     if not position.scaled_out and gain_pct >= config.profit_target_pct:
@@ -35,6 +57,7 @@ def evaluate_exit(
             action=ExitAction.SCALE_OUT,
             qty_to_close=qty_to_close,
             reason=f"unrealized gain {gain_pct:.1%} reached profit target {config.profit_target_pct:.1%}",
+            stop_loss_streak=0,
         )
 
     if position.scaled_out:
@@ -45,6 +68,7 @@ def evaluate_exit(
                 action=ExitAction.TRAILING_STOP,
                 qty_to_close=position.qty,
                 reason=f"pulled back {pullback:.1%} from peak gain {peak:.1%}, trailing stop {config.trailing_stop_pct:.1%}",
+                stop_loss_streak=0,
             )
 
-    return ExitDecision(action=ExitAction.NONE, qty_to_close=0, reason="no exit condition met")
+    return ExitDecision(action=ExitAction.NONE, qty_to_close=0, reason="no exit condition met", stop_loss_streak=0)

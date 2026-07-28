@@ -12,7 +12,7 @@ EXPIRY = date(2026, 8, 21)
 ENTRY_DATE = date(2026, 7, 1)
 
 
-def make_record(symbol="AAPL", qty=4, entry_cost=500.0, scaled_out=False, peak_gain_pct=0.0):
+def make_record(symbol="AAPL", qty=4, entry_cost=500.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0):
     return OpenPositionRecord(
         symbol=symbol,
         strategy_type=StrategyType.LONG_CALL,
@@ -21,7 +21,10 @@ def make_record(symbol="AAPL", qty=4, entry_cost=500.0, scaled_out=False, peak_g
         legs=[
             PersistedLeg(symbol=f"{symbol}260821C00150000", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL, side=OrderSide.BUY)
         ],
-        state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out, peak_gain_pct=peak_gain_pct),
+        state=PositionState(
+            symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out,
+            peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak,
+        ),
     )
 
 
@@ -55,6 +58,17 @@ async def test_upsert_overwrites_existing_record(pool):
     assert fetched.state.qty == 2
     assert fetched.state.scaled_out is True
     assert fetched.state.peak_gain_pct == pytest.approx(1.2)
+
+
+@pytest.mark.asyncio
+async def test_stop_loss_streak_round_trips(pool):
+    repo = PositionStateRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    await repo.upsert(make_record(stop_loss_streak=2), updated_at=now)
+
+    fetched = await repo.get("AAPL")
+    assert fetched.state.stop_loss_streak == 2
 
 
 @pytest.mark.asyncio

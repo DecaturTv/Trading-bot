@@ -6,7 +6,9 @@ from trade_management.models import ExitAction, PositionState, TradeManagementCo
 
 
 def make_position(**overrides):
-    defaults = dict(symbol="AAPL", qty=4, entry_cost_per_unit=500.0, scaled_out=False, peak_gain_pct=0.0)
+    defaults = dict(
+        symbol="AAPL", qty=4, entry_cost_per_unit=500.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0
+    )
     defaults.update(overrides)
     return PositionState(**defaults)
 
@@ -29,6 +31,37 @@ def test_stop_loss_triggers_at_configured_threshold():
 
     assert decision.action is ExitAction.STOP_LOSS
     assert decision.qty_to_close == position.qty
+
+
+def test_stop_loss_waits_for_confirmation_before_closing():
+    config = make_config(stop_loss_pct=0.50, stop_loss_confirmation_count=3)
+    position = make_position(entry_cost_per_unit=500.0, stop_loss_streak=0)
+
+    decision = evaluate_exit(position, current_value_per_unit=240.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.NONE
+    assert decision.stop_loss_streak == 1
+
+
+def test_stop_loss_closes_once_confirmation_count_reached():
+    config = make_config(stop_loss_pct=0.50, stop_loss_confirmation_count=3)
+    position = make_position(entry_cost_per_unit=500.0, stop_loss_streak=2)
+
+    decision = evaluate_exit(position, current_value_per_unit=240.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.STOP_LOSS
+    assert decision.qty_to_close == position.qty
+    assert decision.stop_loss_streak == 3
+
+
+def test_stop_loss_streak_resets_once_price_recovers():
+    config = make_config(stop_loss_pct=0.50, stop_loss_confirmation_count=3)
+    position = make_position(entry_cost_per_unit=500.0, stop_loss_streak=2)
+
+    decision = evaluate_exit(position, current_value_per_unit=520.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.NONE
+    assert decision.stop_loss_streak == 0
 
 
 def test_scale_out_triggers_at_profit_target_and_closes_configured_fraction():
@@ -86,7 +119,7 @@ def test_config_rejects_non_positive_stop_loss():
     with pytest.raises(ValueError):
         TradeManagementConfig(
             stop_loss_pct=0.0, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
-            min_trading_days_before_expiry=2,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         )
 
 
@@ -94,7 +127,7 @@ def test_config_rejects_invalid_scale_out_fraction():
     with pytest.raises(ValueError):
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=1.5, trailing_stop_pct=0.2,
-            min_trading_days_before_expiry=2,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         )
 
 
@@ -102,5 +135,13 @@ def test_config_rejects_negative_min_dte():
     with pytest.raises(ValueError):
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
-            min_trading_days_before_expiry=-1,
+            min_trading_days_before_expiry=-1, stop_loss_confirmation_count=1,
+        )
+
+
+def test_config_rejects_non_positive_stop_loss_confirmation_count():
+    with pytest.raises(ValueError):
+        TradeManagementConfig(
+            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=0,
         )

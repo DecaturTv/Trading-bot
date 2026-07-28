@@ -8,6 +8,7 @@ from broker.models import OptionContract, OptionGreeks, OptionRight
 from dashboard.trading_loop import entry_cycle, loss_limit_check_cycle, position_management_cycle, progress_report_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 from risk.kelly import KellyResult
+from trade_management.models import TradeManagementConfig
 
 MARKET_OPEN_TUESDAY = datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)  # ~11am ET, a Tuesday
 MARKET_CLOSED_SATURDAY = datetime(2026, 7, 25, 15, 0, tzinfo=timezone.utc)
@@ -118,6 +119,26 @@ async def test_entry_cycle_skips_when_nearest_expiration_is_too_close_to_dte_flo
     # position that would immediately force-close on the next check.
     near_expiration = date(2026, 7, 22)
     context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)], expiration=near_expiration)
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.executor.execute.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_skips_when_nearest_expiration_deviates_too_far_from_target_dte():
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    # option_target_dte=45; EXPIRY (2026-09-18) is 59 calendar days out from
+    # MARKET_OPEN_TUESDAY (2026-07-21) -- a 14-day deviation. With the cap
+    # tightened to 10, the chain has nothing close enough to the target and
+    # entry should be skipped rather than taking a contract with a very
+    # different theta/gamma profile than intended (see the ACI trade in
+    # project memory).
+    context.settings.option_max_dte_deviation_days = 10
+    context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)])
 
     await entry_cycle(context, MARKET_OPEN_TUESDAY)
 
@@ -345,6 +366,64 @@ async def test_position_management_cycle_full_exit_deletes_position_and_records_
     context.alert_manager.send.assert_awaited_once()
     assert events[0]["type"] == "position_closed"
     assert events[0]["action"] == "stop_loss"
+
+
+@pytest.mark.asyncio
+async def test_position_management_cycle_defers_stop_loss_until_confirmed():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
+    )
+    record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, stop_loss_streak=0)
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    # value collapsed well past -50% -> breaches stop_loss, but this is only
+    # the first of 2 required consecutive checks -- must not close yet.
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=0.5, ask=0.6, last_price=0.55, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.1, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_not_awaited()
+    context.broker.submit_multi_leg_order.assert_not_awaited()
+    context.position_repository.delete.assert_not_awaited()
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.position_repository.upsert.assert_awaited_once()
+    persisted = context.position_repository.upsert.call_args.args[0]
+    assert persisted.state.stop_loss_streak == 1
+
+
+@pytest.mark.asyncio
+async def test_position_management_cycle_closes_on_second_consecutive_stop_loss_breach():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
+    )
+    # Streak already at 1 from a prior check -- this breach is the 2nd in a
+    # row and should now actually close.
+    record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, stop_loss_streak=1)
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=0.5, ask=0.6, last_price=0.55, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.1, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.trade_outcome_repository.record_outcome.assert_awaited_once()
+    context.position_repository.delete.assert_awaited_once_with("AAPL")
 
 
 @pytest.mark.asyncio

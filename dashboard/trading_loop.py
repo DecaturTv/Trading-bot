@@ -106,10 +106,26 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
 
     # select_expiration picks the closest available expiration to the target
     # regardless of how close that is -- if the chain has nothing near
-    # option_target_dte, it can hand back something already at or past the
-    # force-close line, which would open and immediately EXPIRY_EXIT on the
-    # next position-management pass. Skip the entry instead of doing that
-    # round trip for nothing.
+    # option_target_dte, it hands back whatever's closest anyway. That can be
+    # a contract days from expiry when 25 DTE was wanted (see the ACI trade
+    # in project memory: target 25 DTE, chain only had ~3 DTE available,
+    # resulting in a deep-theta/gamma contract whose price swings 50%+ on
+    # quote noise alone). Skip the entry rather than take a contract whose
+    # risk profile doesn't match what was configured.
+    calendar_dte = (expiration - now.date()).days
+    dte_deviation = abs(calendar_dte - context.settings.option_target_dte)
+    if dte_deviation > context.settings.option_max_dte_deviation_days:
+        logger.info(
+            "entry cycle (%s) skipped %s: nearest expiration %s is %d calendar days out, "
+            "%d away from target %d (> %d max deviation)",
+            timeframe, symbol, expiration, calendar_dte, dte_deviation,
+            context.settings.option_target_dte, context.settings.option_max_dte_deviation_days,
+        )
+        return
+
+    # Separate floor: even within the deviation tolerance above, never open a
+    # position that's already at or past the force-close line -- it would
+    # open and immediately EXPIRY_EXIT on the next position-management pass.
     dte = trading_days_until(expiration, now.date())
     if dte <= context.trade_management_config.min_trading_days_before_expiry:
         logger.info(
@@ -237,6 +253,9 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
 
     decision = evaluate_exit(record.state, current_value, dte, context.trade_management_config)
     if decision.action is ExitAction.NONE:
+        if decision.stop_loss_streak != record.state.stop_loss_streak:
+            updated_state = replace(record.state, stop_loss_streak=decision.stop_loss_streak)
+            await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
         return
 
     close_request = build_close_order_request(strategy, decision.qty_to_close, current_contracts)
@@ -254,7 +273,9 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
     else:
         current_gain_pct = (current_value - record.state.entry_cost_per_unit) / record.state.entry_cost_per_unit
         peak = max(record.state.peak_gain_pct, current_gain_pct)
-        updated_state = replace(record.state, qty=remaining, scaled_out=True, peak_gain_pct=peak)
+        updated_state = replace(
+            record.state, qty=remaining, scaled_out=True, peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak
+        )
         await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
 
     severity = Severity.WARNING if decision.action is ExitAction.STOP_LOSS else Severity.INFO

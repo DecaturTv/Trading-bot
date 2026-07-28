@@ -7,6 +7,7 @@ from broker.models import Order, OrderSide, OrderStatus, OrderType, Quote
 from dashboard.stock_loop import stock_entry_cycle, stock_position_management_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 from risk.kelly import KellyResult
+from trade_management.models import TradeManagementConfig
 
 MARKET_OPEN_TUESDAY = datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)  # ~11am ET, a Tuesday
 MARKET_CLOSED_SATURDAY = datetime(2026, 7, 25, 15, 0, tzinfo=timezone.utc)
@@ -225,6 +226,26 @@ async def test_position_management_closes_full_position_on_stop_loss():
     context.stock_position_repository.delete.assert_awaited_once_with("AAPL")
     assert events[0]["type"] == "stock_position_closed"
     assert events[0]["action"] == "stop_loss"
+
+
+@pytest.mark.asyncio
+async def test_position_management_defers_stop_loss_until_confirmed():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
+    )
+    record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, stop_loss_streak=0)
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=45.0)  # -55%, breaches -50% stop
+
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_not_awaited()
+    context.stock_position_repository.delete.assert_not_awaited()
+    context.stock_position_repository.upsert.assert_awaited_once()
+    persisted = context.stock_position_repository.upsert.call_args.args[0]
+    assert persisted.state.stop_loss_streak == 1
 
 
 @pytest.mark.asyncio

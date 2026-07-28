@@ -20,6 +20,7 @@ class TradeManagementConfig:
     scale_out_fraction: float  # e.g. 0.50 = close half the position at the profit target
     trailing_stop_pct: float  # pullback from peak gain % that closes the remainder after scale-out
     min_trading_days_before_expiry: int  # force-close this many trading days before expiration
+    stop_loss_confirmation_count: int  # consecutive breaching checks required before a stop-loss actually closes
 
     def __post_init__(self):
         for name in ("stop_loss_pct", "profit_target_pct", "trailing_stop_pct"):
@@ -30,6 +31,8 @@ class TradeManagementConfig:
             raise ValueError("scale_out_fraction must be in (0, 1]")
         if self.min_trading_days_before_expiry < 0:
             raise ValueError("min_trading_days_before_expiry must be >= 0")
+        if self.stop_loss_confirmation_count < 1:
+            raise ValueError("stop_loss_confirmation_count must be >= 1")
 
 
 @dataclass(frozen=True)
@@ -41,6 +44,7 @@ class PositionState:
     entry_cost_per_unit: float  # net debit paid per unit, in dollars (100x multiplier, same scale as OptionStrategy.net_debit)
     scaled_out: bool = False
     peak_gain_pct: float = 0.0  # highest unrealized gain % observed since entry
+    stop_loss_streak: int = 0  # consecutive position-checks where unrealized loss has breached stop_loss_pct
 
 
 @dataclass(frozen=True)
@@ -83,3 +87,4 @@ class ExitDecision:
     action: ExitAction
     qty_to_close: int
     reason: str
+    stop_loss_streak: int  # streak value the caller should persist on PositionState, win or lose this check

@@ -160,6 +160,9 @@ async def _manage_stock_position(context: AppContext, record: OpenStockPositionR
 
     decision = evaluate_exit(record.state, current_value, _NEVER_EXPIRES, context.trade_management_config)
     if decision.action is ExitAction.NONE:
+        if decision.stop_loss_streak != record.state.stop_loss_streak:
+            updated_state = replace(record.state, stop_loss_streak=decision.stop_loss_streak)
+            await context.stock_position_repository.upsert(replace(record, state=updated_state), updated_at=now)
         return
 
     order = await context.broker.submit_order(
@@ -178,7 +181,9 @@ async def _manage_stock_position(context: AppContext, record: OpenStockPositionR
     else:
         current_gain_pct = (current_value - record.state.entry_cost_per_unit) / record.state.entry_cost_per_unit
         peak = max(record.state.peak_gain_pct, current_gain_pct)
-        updated_state = replace(record.state, qty=remaining, scaled_out=True, peak_gain_pct=peak)
+        updated_state = replace(
+            record.state, qty=remaining, scaled_out=True, peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak
+        )
         await context.stock_position_repository.upsert(replace(record, state=updated_state), updated_at=now)
 
     severity = Severity.WARNING if decision.action is ExitAction.STOP_LOSS else Severity.INFO

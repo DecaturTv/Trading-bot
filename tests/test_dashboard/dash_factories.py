@@ -26,7 +26,10 @@ def make_account(equity=10000.0, cash=10000.0, buying_power=10000.0):
     return Account(account_id="acct-1", equity=equity, cash=cash, buying_power=buying_power, currency="USD")
 
 
-def make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, scaled_out=False, peak_gain_pct=0.0, expiration=date(2026, 9, 18)):
+def make_position_record(
+    symbol="AAPL", qty=2, entry_cost=500.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0,
+    expiration=date(2026, 9, 18),
+):
     return OpenPositionRecord(
         symbol=symbol,
         strategy_type=StrategyType.LONG_CALL,
@@ -38,16 +41,22 @@ def make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, scaled_out=Fals
                 right=OptionRight.CALL, side=OrderSide.BUY,
             )
         ],
-        state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out, peak_gain_pct=peak_gain_pct),
+        state=PositionState(
+            symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out,
+            peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak,
+        ),
     )
 
 
-def make_stock_position_record(symbol="AAPL", qty=10, entry_cost=150.0, scaled_out=False, peak_gain_pct=0.0):
+def make_stock_position_record(symbol="AAPL", qty=10, entry_cost=150.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0):
     return OpenStockPositionRecord(
         symbol=symbol,
         direction=TradeDirection.BULLISH,
         entry_date=date(2026, 7, 1),
-        state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out, peak_gain_pct=peak_gain_pct),
+        state=PositionState(
+            symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out,
+            peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak,
+        ),
     )
 
 
@@ -71,6 +80,11 @@ def make_context(**overrides) -> AppContext:
         confidence_threshold=92,
         option_target_delta=0.40,
         option_target_dte=45,
+        # Generous on purpose: most fixtures use a fixed EXPIRY constant that
+        # doesn't track option_target_dte, so this just needs to not clip
+        # unrelated tests. test_trading_loop.py has a dedicated test that
+        # overrides this down to exercise the deviation guard itself.
+        option_max_dte_deviation_days=30,
         daily_loss_limit_pct=0.05,
         weekly_loss_limit_pct=0.10,
         kelly_fraction=0.25,
@@ -97,7 +111,7 @@ def make_context(**overrides) -> AppContext:
     ctx.executor = AsyncMock()
     ctx.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
-        trailing_stop_pct=0.20, min_trading_days_before_expiry=2,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
     )
     ctx.position_repository = AsyncMock()
     ctx.position_repository.get.return_value = None
