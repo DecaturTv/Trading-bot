@@ -1,10 +1,11 @@
 import json
+from datetime import datetime, timedelta, timezone
 
 import httpx
 import pytest
 
 from broker.models import OrderSide
-from forex.oanda_adapter import OandaAdapter, OandaError, TradeNotSettledError
+from forex.oanda_adapter import _MAX_CANDLES_PER_REQUEST, OandaAdapter, OandaError, TradeNotSettledError
 
 BASE_URL = "https://api-fxpractice.oanda.com"
 
@@ -77,6 +78,82 @@ async def test_get_candles_maps_complete_candles_to_bars():
     assert bars[0].symbol == "EUR_USD"
     assert bars[0].open == 1.1000
     assert bars[0].close == 1.1020
+    await adapter.aclose()
+
+
+def _candle(hours_after_epoch: int, complete: bool = True) -> dict:
+    ts = datetime(2026, 1, 1, tzinfo=timezone.utc) + timedelta(hours=hours_after_epoch)
+    return {
+        "time": ts.isoformat().replace("+00:00", ".000000000Z"),
+        "volume": 100,
+        "complete": complete,
+        "mid": {"o": "1.1000", "h": "1.1010", "l": "1.0990", "c": "1.1005"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_get_bars_single_page_within_range():
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v3/instruments/EUR_USD/candles"
+        assert request.url.params["count"] == "5000"
+        assert "to" not in request.url.params
+        calls.append(1)
+        if len(calls) > 1:
+            return httpx.Response(200, json={"candles": []})  # no more data past `from`
+        return httpx.Response(200, json={"candles": [_candle(0), _candle(1), _candle(2, complete=False)]})
+
+    adapter = make_adapter(handler)
+    bars = await adapter.get_bars(
+        "EUR_USD", "H1", datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)
+    )
+
+    assert len(bars) == 2  # incomplete candle dropped
+    assert bars[0].timestamp.hour == 0
+    assert bars[1].timestamp.hour == 1
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_bars_pages_until_reaching_end():
+    calls = []
+    epoch = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # end lands strictly between page 2's two candle timestamps, so exactly
+    # one of them survives the `< end` filter and the loop stops right after
+    # (its cursor lands past end) rather than paging a third time.
+    end = epoch + timedelta(hours=_MAX_CANDLES_PER_REQUEST + 1)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request.url.params["from"])
+        if len(calls) == 1:
+            # A full page -- more data exists past it, must page again.
+            return httpx.Response(200, json={"candles": [_candle(h) for h in range(_MAX_CANDLES_PER_REQUEST)]})
+        # Second page continues right where the first left off.
+        return httpx.Response(
+            200,
+            json={"candles": [_candle(_MAX_CANDLES_PER_REQUEST), _candle(_MAX_CANDLES_PER_REQUEST + 1)]},
+        )
+
+    adapter = make_adapter(handler)
+    bars = await adapter.get_bars("EUR_USD", "H1", epoch, end)
+
+    assert len(calls) == 2  # paged exactly once past the full first page
+    assert len(bars) == _MAX_CANDLES_PER_REQUEST + 1  # the hour-5001 candle lands at/after `end`, excluded
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_bars_returns_empty_when_no_candles_available():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"candles": []})
+
+    adapter = make_adapter(handler)
+    bars = await adapter.get_bars(
+        "EUR_USD", "H1", datetime(2026, 1, 1, tzinfo=timezone.utc), datetime(2026, 1, 2, tzinfo=timezone.utc)
+    )
+
+    assert bars == []
     await adapter.aclose()
 
 
