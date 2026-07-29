@@ -1,4 +1,6 @@
 from .engine import BacktestEngine
+from .forex_engine import ForexBacktestEngine
+from .forex_models import ForexBacktestConfig, ForexBacktestResult, SimulatedForexTrade
 from .models import BacktestConfig, BacktestResult, SimulatedTrade
 from .monte_carlo import MonteCarloResult, run_monte_carlo
 from .simulated_pricing import (
@@ -7,7 +9,7 @@ from .simulated_pricing import (
     select_synthetic_strike_by_delta,
     simulated_strategy_value,
 )
-from .statistics import compute_trade_statistics
+from .statistics import compute_forex_trade_statistics, compute_trade_statistics
 from .volatility_estimator import realized_volatility
 from .walk_forward import WalkForwardWindow, run_walk_forward, split_walk_forward_windows
 
@@ -16,6 +18,10 @@ __all__ = [
     "BacktestConfig",
     "BacktestResult",
     "SimulatedTrade",
+    "ForexBacktestEngine",
+    "ForexBacktestConfig",
+    "ForexBacktestResult",
+    "SimulatedForexTrade",
     "MonteCarloResult",
     "run_monte_carlo",
     "SimulatedLeg",
@@ -23,6 +29,7 @@ __all__ = [
     "select_synthetic_strike_by_delta",
     "simulated_strategy_value",
     "compute_trade_statistics",
+    "compute_forex_trade_statistics",
     "realized_volatility",
     "WalkForwardWindow",
     "run_walk_forward",
