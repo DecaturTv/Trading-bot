@@ -155,5 +155,12 @@ class OandaAdapter:
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def close_trade(self, trade_id: str) -> None:
+        """Raises OandaError if the close didn't actually fill (e.g. OANDA
+        cancels it with reason MARKET_HALTED) -- a 200 response here just
+        means the request was accepted, not that the trade closed."""
         response = await self._client.put(f"/v3/accounts/{self._account_id}/trades/{trade_id}/close")
         response.raise_for_status()
+        body = response.json()
+        if body.get("orderFillTransaction") is None:
+            reason = body.get("orderCancelTransaction", {}).get("reason", "unknown")
+            raise OandaError(f"close of trade {trade_id} was not filled: {reason}")

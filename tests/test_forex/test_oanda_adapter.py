@@ -229,8 +229,23 @@ async def test_close_trade_puts_expected_url():
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "PUT"
         assert request.url.path == "/v3/accounts/acct-1/trades/1/close"
-        return httpx.Response(200, json={})
+        return httpx.Response(200, json={"orderFillTransaction": {"tradesClosed": [{"tradeID": "1"}]}})
 
     adapter = make_adapter(handler)
     await adapter.close_trade("1")
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_close_trade_raises_when_not_filled():
+    # A 200 response doesn't mean the trade actually closed -- OANDA can
+    # accept the request and still cancel it (e.g. a halted market), leaving
+    # the trade open. Same shape as submit_market_order's not-filled check.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"orderCancelTransaction": {"reason": "MARKET_HALTED"}})
+
+    adapter = make_adapter(handler)
+
+    with pytest.raises(OandaError, match="MARKET_HALTED"):
+        await adapter.close_trade("1")
     await adapter.aclose()
