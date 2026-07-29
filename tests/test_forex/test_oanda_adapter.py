@@ -4,7 +4,7 @@ import httpx
 import pytest
 
 from broker.models import OrderSide
-from forex.oanda_adapter import OandaAdapter, OandaError
+from forex.oanda_adapter import OandaAdapter, OandaError, TradeNotSettledError
 
 BASE_URL = "https://api-fxpractice.oanda.com"
 
@@ -194,6 +194,18 @@ async def test_get_trade_realized_pnl():
     pnl = await adapter.get_trade_realized_pnl("1")
 
     assert pnl == -12.34
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_trade_realized_pnl_raises_not_settled_on_404():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"errorMessage": "trade not found"})
+
+    adapter = make_adapter(handler)
+
+    with pytest.raises(TradeNotSettledError):
+        await adapter.get_trade_realized_pnl("1")
     await adapter.aclose()
 
 

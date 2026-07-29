@@ -13,6 +13,15 @@ class OandaError(Exception):
     pass
 
 
+class TradeNotSettledError(OandaError):
+    """Trade closed on OANDA's side but its realized P&L isn't queryable yet —
+    OANDA's trade endpoint lags a closed trade's data by up to a few minutes."""
+
+    def __init__(self, trade_id: str):
+        super().__init__(f"trade {trade_id} not yet settled")
+        self.trade_id = trade_id
+
+
 class OandaAdapter:
     """Thin wrapper over OANDA's v20 REST API — no SDK, same reasoning as the
     alert notifiers: it's a handful of HTTP calls, not worth a dependency.
@@ -128,6 +137,8 @@ class OandaAdapter:
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def get_trade_realized_pnl(self, trade_id: str) -> float:
         response = await self._client.get(f"/v3/accounts/{self._account_id}/trades/{trade_id}")
+        if response.status_code == 404:
+            raise TradeNotSettledError(trade_id)
         response.raise_for_status()
         return float(response.json()["trade"]["realizedPL"])
 

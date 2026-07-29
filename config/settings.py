@@ -142,6 +142,11 @@ class Settings(BaseSettings):
     # currency, so correlated pairs (EUR_ZAR + CHF_ZAR + GBP_ZAR, all really
     # one bet on ZAR) can't all stack on the same underlying move.
     forex_max_positions_per_currency: int = 2
+    # Kill switch for new forex entries only -- position management,
+    # reconciliation, loss-limit checks, and progress reports keep running
+    # against whatever's already open. Flip off to pause entries (e.g. while
+    # investigating a losing strategy) without abandoning open positions.
+    forex_entries_enabled: bool = True
 
     # Congressional trade disclosures — a new decision_engine factor (see
     # DEFAULT_WEIGHTS in decision_engine/scoring.py) fed by free STOCK Act

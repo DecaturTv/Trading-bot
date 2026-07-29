@@ -8,6 +8,7 @@ from decision_engine.models import TradeDirection
 from forex.conversion import quote_to_account_rate
 from forex.exposure import check_currency_concentration
 from forex.models import OpenForexPosition
+from forex.oanda_adapter import TradeNotSettledError
 from forex.sizing import units_for_risk
 from indicators.volatility import atr
 from risk.halt_manager import evaluate_loss_limits
@@ -39,6 +40,9 @@ async def forex_entry_cycle(context: AppContext, now: datetime, on_event: EventC
     from the equities halt (see forex_loss_limit_check_cycle) so a loss-limit
     breach on one account doesn't stop the other."""
     if context.forex_broker is None:
+        return
+    if not context.settings.forex_entries_enabled:
+        logger.info("forex entry cycle skipped: entries disabled")
         return
     if not is_forex_market_open(now):
         logger.info("forex entry cycle skipped: market closed")
@@ -175,7 +179,13 @@ async def _reconcile_forex_position(
     if position.oanda_trade_id in open_trade_ids:
         return  # still open
 
-    pnl = await context.forex_broker.get_trade_realized_pnl(position.oanda_trade_id)
+    try:
+        pnl = await context.forex_broker.get_trade_realized_pnl(position.oanda_trade_id)
+    except TradeNotSettledError:
+        # Trade closed on OANDA's side but its P&L isn't queryable yet (a few
+        # minutes' lag). Not an error -- next cycle's retry will pick it up.
+        logger.info("forex position %s closed on OANDA; P&L not yet settled, will retry next cycle", position.pair)
+        return
     details = {
         "side": position.side.value,
         "units": position.units,

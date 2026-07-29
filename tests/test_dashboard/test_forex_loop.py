@@ -11,6 +11,7 @@ from dashboard.forex_loop import (
     forex_progress_report_cycle,
 )
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
+from forex.oanda_adapter import TradeNotSettledError
 
 MARKET_OPEN_TUESDAY = datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)
 MARKET_CLOSED_SATURDAY = datetime(2026, 7, 25, 15, 0, tzinfo=timezone.utc)
@@ -40,6 +41,15 @@ async def test_entry_cycle_noop_when_market_closed():
     context = make_context()
     await forex_entry_cycle(context, MARKET_CLOSED_SATURDAY)
     context.halt_manager.is_halted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_noop_when_entries_disabled():
+    context = make_context()
+    context.settings.forex_entries_enabled = False
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+    context.halt_manager.is_halted.assert_not_awaited()
+    context.forex_broker.get_tradeable_pairs.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -273,6 +283,21 @@ async def test_position_management_labels_feature_snapshot_on_reconcile():
     await forex_position_management_cycle(context, MARKET_OPEN_TUESDAY)
 
     context.feature_store_repository.record_outcome.assert_awaited_once_with(7, -12.5)
+
+
+@pytest.mark.asyncio
+async def test_position_management_leaves_position_tracked_when_pnl_not_yet_settled():
+    context = make_context()
+    position = make_forex_position(pair="EUR_USD", oanda_trade_id="trade-1")
+    context.forex_position_repository.get_all.return_value = [position]
+    context.forex_broker.get_open_trade_ids.return_value = set()  # no longer open
+    context.forex_broker.get_trade_realized_pnl.side_effect = TradeNotSettledError("trade-1")
+
+    await forex_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.forex_position_repository.delete.assert_not_awaited()
+    context.alert_manager.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio

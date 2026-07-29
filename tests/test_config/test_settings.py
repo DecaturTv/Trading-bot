@@ -123,6 +123,7 @@ def test_forex_defaults():
     assert settings.forex_scan_interval_seconds == 300
     assert settings.forex_position_check_interval_seconds == 120
     assert settings.forex_max_positions_per_currency == 2
+    assert settings.forex_entries_enabled is True
 
 
 @pytest.mark.parametrize(
