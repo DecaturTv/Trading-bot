@@ -104,10 +104,21 @@ class OandaAdapter:
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def submit_market_order(
-        self, pair: str, units: int, side: OrderSide, stop_loss_price: float, take_profit_price: float
+        self, pair: str, units: int, side: OrderSide, stop_loss_distance: float, take_profit_price: float
     ) -> str:
         """units is always positive; side determines direction. Returns the
-        opened trade's OANDA trade ID."""
+        opened trade's OANDA trade ID.
+
+        stop_loss_distance is a trailing stop (trailingStopLossOnFill), not a
+        fixed price -- OANDA ratchets it forward as the trade moves favorably
+        and never lets it loosen, entirely server-side, so it needs no local
+        polling/repricing (same reasoning as attaching stopLoss/takeProfit at
+        entry in the first place: reliable across gaps between position-
+        management cycles). Note OANDA enforces a per-instrument min/max
+        trailing distance (instruments endpoint's minimumTrailingStopDistance/
+        maximumTrailingStopDistance) -- a distance outside that range gets the
+        order cancelled, surfaced below as the usual "not filled" OandaError.
+        """
         signed_units = units if side is OrderSide.BUY else -units
         precision = self._price_precision.get(pair, 5)
         order = {
@@ -116,7 +127,7 @@ class OandaAdapter:
             "units": str(signed_units),
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
-            "stopLossOnFill": {"price": f"{stop_loss_price:.{precision}f}"},
+            "trailingStopLossOnFill": {"distance": f"{stop_loss_distance:.{precision}f}"},
             "takeProfitOnFill": {"price": f"{take_profit_price:.{precision}f}"},
         }
         response = await self._client.post(f"/v3/accounts/{self._account_id}/orders", json={"order": order})

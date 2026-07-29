@@ -102,7 +102,7 @@ async def test_submit_market_order_returns_trade_id_on_fill():
         return httpx.Response(201, json={"orderFillTransaction": {"tradeOpened": {"tradeID": "999"}}})
 
     adapter = make_adapter(handler)
-    trade_id = await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_price=1.0950, take_profit_price=1.1100)
+    trade_id = await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_distance=0.0050, take_profit_price=1.1100)
 
     assert trade_id == "999"
     await adapter.aclose()
@@ -117,9 +117,9 @@ async def test_submit_market_order_uses_default_precision_when_pair_unknown():
         return httpx.Response(201, json={"orderFillTransaction": {"tradeOpened": {"tradeID": "1"}}})
 
     adapter = make_adapter(handler)
-    await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_price=1.09495, take_profit_price=1.11005)
+    await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_distance=0.00505, take_profit_price=1.11005)
 
-    assert captured["order"]["stopLossOnFill"]["price"] == "1.09495"
+    assert captured["order"]["trailingStopLossOnFill"]["distance"] == "0.00505"
     assert captured["order"]["takeProfitOnFill"]["price"] == "1.11005"
     await adapter.aclose()
 
@@ -139,9 +139,9 @@ async def test_submit_market_order_uses_cached_precision_for_jpy_pairs():
 
     adapter = make_adapter(handler)
     await adapter.get_tradeable_pairs()  # populates the precision cache
-    await adapter.submit_market_order("EUR_JPY", 1000, OrderSide.BUY, stop_loss_price=162.12345, take_profit_price=164.98765)
+    await adapter.submit_market_order("EUR_JPY", 1000, OrderSide.BUY, stop_loss_distance=0.12345, take_profit_price=164.98765)
 
-    assert captured["order"]["stopLossOnFill"]["price"] == "162.123"
+    assert captured["order"]["trailingStopLossOnFill"]["distance"] == "0.123"
     assert captured["order"]["takeProfitOnFill"]["price"] == "164.988"
     await adapter.aclose()
 
@@ -155,7 +155,7 @@ async def test_submit_market_order_negates_units_for_sell():
         return httpx.Response(201, json={"orderFillTransaction": {"tradeOpened": {"tradeID": "1"}}})
 
     adapter = make_adapter(handler)
-    await adapter.submit_market_order("EUR_USD", 1000, OrderSide.SELL, stop_loss_price=1.1050, take_profit_price=1.0900)
+    await adapter.submit_market_order("EUR_USD", 1000, OrderSide.SELL, stop_loss_distance=0.0050, take_profit_price=1.0900)
 
     assert captured["order"]["units"] == "-1000"
     await adapter.aclose()
@@ -169,7 +169,22 @@ async def test_submit_market_order_raises_when_not_filled():
     adapter = make_adapter(handler)
 
     with pytest.raises(OandaError, match="MARKET_HALTED"):
-        await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_price=1.0950, take_profit_price=1.1100)
+        await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_distance=0.0050, take_profit_price=1.1100)
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_submit_market_order_raises_when_trailing_distance_out_of_bounds():
+    # OANDA rejects a trailingStopLossOnFill distance outside the instrument's
+    # min/max (e.g. tighter than minimumTrailingStopDistance) the same way it
+    # rejects a halted market -- an orderCancelTransaction, no orderFillTransaction.
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(201, json={"orderCancelTransaction": {"reason": "TRAILING_STOP_LOSS_ON_FILL_DISTANCE_INVALID"}})
+
+    adapter = make_adapter(handler)
+
+    with pytest.raises(OandaError, match="TRAILING_STOP_LOSS_ON_FILL_DISTANCE_INVALID"):
+        await adapter.submit_market_order("EUR_USD", 1000, OrderSide.BUY, stop_loss_distance=0.00001, take_profit_price=1.1100)
     await adapter.aclose()
 
 

@@ -120,7 +120,7 @@ async def _maybe_enter_forex(
         pair, now, factor_values, signal.confidence, signal.direction.value
     )
 
-    trade_id = await context.forex_broker.submit_market_order(pair, units, side, stop_loss_price, take_profit_price)
+    trade_id = await context.forex_broker.submit_market_order(pair, units, side, stop_distance, take_profit_price)
 
     position = OpenForexPosition(
         pair=pair,

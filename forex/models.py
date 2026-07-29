@@ -15,6 +15,9 @@ class OpenForexPosition:
     side: OrderSide
     units: int  # always positive; side carries direction
     entry_price: float
+    # Initial trailing-stop reference price at entry -- OANDA ratchets the
+    # real stop forward server-side from here as the trade moves favorably,
+    # so this value doesn't track the trade's current live stop.
     stop_loss_price: float
     take_profit_price: float
     oanda_trade_id: str
