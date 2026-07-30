@@ -13,11 +13,12 @@ def evaluate_exit(
     entry_direction: TradeDirection | None = None,
 ) -> ExitDecision:
     """Pure decision function — evaluates one snapshot in time. Peak-gain
-    tracking for the trailing stop, and the stop-loss/reversal confirmation
-    streaks below, are all caller-managed state (see PositionStateRepository):
-    this function doesn't mutate position, so the caller must persist the
-    updated peak_gain_pct/stop_loss_streak/reversal_streak it returns between
-    calls.
+    tracking for the trailing stop, and the stop-loss/reversal/trailing-stop
+    confirmation streaks below, are all caller-managed state (see
+    PositionStateRepository): this function doesn't mutate position, so the
+    caller must persist the updated
+    peak_gain_pct/stop_loss_streak/reversal_streak/trailing_stop_streak it
+    returns between calls.
 
     current_direction/entry_direction are optional: pass both to enable the
     reversal-exit check (current signal direction vs. the direction the
@@ -34,6 +35,7 @@ def evaluate_exit(
             reason=f"{trading_days_to_expiry} trading days to expiration <= minimum {config.min_trading_days_before_expiry}",
             stop_loss_streak=0,
             reversal_streak=0,
+            trailing_stop_streak=0,
         )
 
     # Require the reversal to hold across N consecutive checks before acting
@@ -49,6 +51,7 @@ def evaluate_exit(
     )
     reversal_streak = position.reversal_streak + 1 if opposed else 0
 
+    trailing_stop_streak = position.trailing_stop_streak
     stop_loss_streak = position.stop_loss_streak
     if gain_pct <= -config.stop_loss_pct:
         stop_loss_streak = position.stop_loss_streak + 1
@@ -67,6 +70,7 @@ def evaluate_exit(
                 ),
                 stop_loss_streak=stop_loss_streak,
                 reversal_streak=reversal_streak,
+                trailing_stop_streak=trailing_stop_streak,
             )
     else:
         stop_loss_streak = 0
@@ -81,6 +85,7 @@ def evaluate_exit(
             ),
             stop_loss_streak=stop_loss_streak,
             reversal_streak=reversal_streak,
+            trailing_stop_streak=trailing_stop_streak,
         )
 
     if gain_pct <= -config.stop_loss_pct:
@@ -93,6 +98,7 @@ def evaluate_exit(
             ),
             stop_loss_streak=stop_loss_streak,
             reversal_streak=reversal_streak,
+            trailing_stop_streak=trailing_stop_streak,
         )
 
     if not position.scaled_out and gain_pct >= config.profit_target_pct:
@@ -103,19 +109,34 @@ def evaluate_exit(
             reason=f"unrealized gain {gain_pct:.1%} reached profit target {config.profit_target_pct:.1%}",
             stop_loss_streak=stop_loss_streak,
             reversal_streak=reversal_streak,
+            trailing_stop_streak=trailing_stop_streak,
         )
 
     if position.scaled_out:
         peak = max(position.peak_gain_pct, gain_pct)
         pullback = peak - gain_pct
         if pullback >= config.trailing_stop_pct:
-            return ExitDecision(
-                action=ExitAction.TRAILING_STOP,
-                qty_to_close=position.qty,
-                reason=f"pulled back {pullback:.1%} from peak gain {peak:.1%}, trailing stop {config.trailing_stop_pct:.1%}",
-                stop_loss_streak=stop_loss_streak,
-                reversal_streak=reversal_streak,
-            )
+            trailing_stop_streak = position.trailing_stop_streak + 1
+            # Require the pullback to hold for N consecutive checks before
+            # closing -- same rationale as the stop-loss confirmation streak
+            # above: current_value_per_unit is a mid-price snapshot, and a
+            # single noisy quote (wide bid/ask on a thin option) can trip a
+            # pullback that hasn't actually happened. See project memory on
+            # the ACI trade that motivated the equivalent stop-loss guard.
+            if trailing_stop_streak >= config.trailing_stop_confirmation_count:
+                return ExitDecision(
+                    action=ExitAction.TRAILING_STOP,
+                    qty_to_close=position.qty,
+                    reason=(
+                        f"pulled back {pullback:.1%} from peak gain {peak:.1%}, trailing stop {config.trailing_stop_pct:.1%} "
+                        f"for {trailing_stop_streak}/{config.trailing_stop_confirmation_count} consecutive checks"
+                    ),
+                    stop_loss_streak=stop_loss_streak,
+                    reversal_streak=reversal_streak,
+                    trailing_stop_streak=trailing_stop_streak,
+                )
+        else:
+            trailing_stop_streak = 0
 
     return ExitDecision(
         action=ExitAction.NONE,
@@ -123,4 +144,5 @@ def evaluate_exit(
         reason="no exit condition met",
         stop_loss_streak=stop_loss_streak,
         reversal_streak=reversal_streak,
+        trailing_stop_streak=trailing_stop_streak,
     )

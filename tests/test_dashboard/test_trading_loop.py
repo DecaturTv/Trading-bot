@@ -382,6 +382,7 @@ async def test_position_management_cycle_defers_stop_loss_until_confirmed():
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
         reversal_confirmation_count=1,
+        trailing_stop_confirmation_count=1,
     )
     record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, stop_loss_streak=0)
     leg_symbol = record.legs[0].symbol
@@ -414,6 +415,7 @@ async def test_position_management_cycle_closes_on_second_consecutive_stop_loss_
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
         reversal_confirmation_count=1,
+        trailing_stop_confirmation_count=1,
     )
     # Streak already at 1 from a prior check -- this breach is the 2nd in a
     # row and should now actually close.
@@ -436,12 +438,80 @@ async def test_position_management_cycle_closes_on_second_consecutive_stop_loss_
 
 
 @pytest.mark.asyncio
+async def test_position_management_cycle_defers_trailing_stop_until_confirmed():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=3,
+    )
+    # Already scaled out at a 150% peak; current value pulled back to a 20%
+    # gain -- a 130% pullback, well past the 20% trailing-stop threshold, but
+    # this is only the first of 3 required consecutive checks.
+    record = make_position_record(
+        symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, scaled_out=True, peak_gain_pct=1.50,
+        trailing_stop_streak=0,
+    )
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=5.99, ask=6.01, last_price=6.00, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.3, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_not_awaited()
+    context.broker.submit_multi_leg_order.assert_not_awaited()
+    context.position_repository.delete.assert_not_awaited()
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.position_repository.upsert.assert_awaited_once()
+    persisted = context.position_repository.upsert.call_args.args[0]
+    assert persisted.state.trailing_stop_streak == 1
+
+
+@pytest.mark.asyncio
+async def test_position_management_cycle_closes_on_second_consecutive_trailing_stop_breach():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=2,
+    )
+    # Streak already at 1 from a prior check -- this breach is the 2nd in a
+    # row and should now actually close.
+    record = make_position_record(
+        symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, scaled_out=True, peak_gain_pct=1.50,
+        trailing_stop_streak=1,
+    )
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=5.99, ask=6.01, last_price=6.00, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.3, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.trade_outcome_repository.record_outcome.assert_awaited_once()
+    context.position_repository.delete.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
 async def test_position_management_cycle_closes_on_confirmed_reversal():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1,
+        trailing_stop_confirmation_count=1,
     )
     record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, direction=TradeDirection.BULLISH)
     leg_symbol = record.legs[0].symbol
@@ -473,6 +543,7 @@ async def test_position_management_cycle_defers_reversal_exit_until_confirmed():
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=3,
+        trailing_stop_confirmation_count=1,
     )
     record = make_position_record(
         symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, direction=TradeDirection.BULLISH, reversal_streak=0,

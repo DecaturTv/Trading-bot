@@ -290,6 +290,7 @@ async def test_position_management_defers_stop_loss_until_confirmed():
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
         reversal_confirmation_count=1,
+        trailing_stop_confirmation_count=1,
     )
     record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, stop_loss_streak=0)
     context.stock_position_repository.get_all.return_value = [record]
@@ -305,12 +306,63 @@ async def test_position_management_defers_stop_loss_until_confirmed():
 
 
 @pytest.mark.asyncio
+async def test_position_management_defers_trailing_stop_until_confirmed():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=3,
+    )
+    # Already scaled out at a 150% peak; current value pulled back to a 20%
+    # gain -- a 130% pullback, well past the 20% trailing-stop threshold, but
+    # this is only the first of 3 required consecutive checks.
+    record = make_stock_position_record(
+        symbol="AAPL", qty=10, entry_cost=100.0, scaled_out=True, peak_gain_pct=1.50, trailing_stop_streak=0,
+    )
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=120.0)  # +20%, pulled back from 150% peak
+
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_not_awaited()
+    context.stock_position_repository.delete.assert_not_awaited()
+    context.stock_position_repository.upsert.assert_awaited_once()
+    persisted = context.stock_position_repository.upsert.call_args.args[0]
+    assert persisted.state.trailing_stop_streak == 1
+
+
+@pytest.mark.asyncio
+async def test_position_management_closes_on_second_consecutive_trailing_stop_breach():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=2,
+    )
+    # Streak already at 1 from a prior check -- this breach is the 2nd in a
+    # row and should now actually close.
+    record = make_stock_position_record(
+        symbol="AAPL", qty=10, entry_cost=100.0, scaled_out=True, peak_gain_pct=1.50, trailing_stop_streak=1,
+    )
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=120.0)
+    context.broker.submit_order.return_value = make_order(qty=10, side=OrderSide.SELL)
+
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.trade_outcome_repository.record_outcome.assert_awaited_once()
+    context.stock_position_repository.delete.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
 async def test_position_management_closes_on_confirmed_reversal():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1,
+        trailing_stop_confirmation_count=1,
     )
     record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, direction=TradeDirection.BULLISH)
     context.stock_position_repository.get_all.return_value = [record]
@@ -334,6 +386,7 @@ async def test_position_management_defers_reversal_exit_until_confirmed():
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=3,
+        trailing_stop_confirmation_count=1,
     )
     record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, direction=TradeDirection.BULLISH, reversal_streak=0)
     context.stock_position_repository.get_all.return_value = [record]

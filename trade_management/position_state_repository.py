@@ -11,8 +11,8 @@ from .models import OpenPositionRecord, PersistedLeg, PositionState
 
 _UPSERT_SQL = """
 INSERT INTO trade_management_positions
-    (symbol, strategy_type, direction, entry_date, legs, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak, updated_at)
-VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12)
+    (symbol, strategy_type, direction, entry_date, legs, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak, trailing_stop_streak, updated_at)
+VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (symbol) DO UPDATE SET
     strategy_type = EXCLUDED.strategy_type,
     direction = EXCLUDED.direction,
@@ -24,12 +24,13 @@ ON CONFLICT (symbol) DO UPDATE SET
     peak_gain_pct = EXCLUDED.peak_gain_pct,
     stop_loss_streak = EXCLUDED.stop_loss_streak,
     reversal_streak = EXCLUDED.reversal_streak,
+    trailing_stop_streak = EXCLUDED.trailing_stop_streak,
     updated_at = EXCLUDED.updated_at
 """
 
 _COLUMNS = (
     "symbol, strategy_type, direction, entry_date, legs, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, "
-    "stop_loss_streak, reversal_streak"
+    "stop_loss_streak, reversal_streak, trailing_stop_streak"
 )
 _GET_SQL = f"SELECT {_COLUMNS} FROM trade_management_positions WHERE symbol = $1"
 _GET_ALL_SQL = f"SELECT {_COLUMNS} FROM trade_management_positions ORDER BY symbol"
@@ -79,6 +80,7 @@ def _row_to_record(row) -> OpenPositionRecord:
             peak_gain_pct=row["peak_gain_pct"],
             stop_loss_streak=row["stop_loss_streak"],
             reversal_streak=row["reversal_streak"],
+            trailing_stop_streak=row["trailing_stop_streak"],
         ),
     )
 
@@ -108,6 +110,7 @@ class PositionStateRepository:
                 record.state.peak_gain_pct,
                 record.state.stop_loss_streak,
                 record.state.reversal_streak,
+                record.state.trailing_stop_streak,
                 updated_at,
             )
 

@@ -305,8 +305,15 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
         current_direction=current_direction, entry_direction=record.direction,
     )
     if decision.action is ExitAction.NONE:
-        if decision.stop_loss_streak != record.state.stop_loss_streak or decision.reversal_streak != record.state.reversal_streak:
-            updated_state = replace(record.state, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak)
+        if (
+            decision.stop_loss_streak != record.state.stop_loss_streak
+            or decision.reversal_streak != record.state.reversal_streak
+            or decision.trailing_stop_streak != record.state.trailing_stop_streak
+        ):
+            updated_state = replace(
+                record.state, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
+                trailing_stop_streak=decision.trailing_stop_streak,
+            )
             await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
         return
 
@@ -328,6 +335,7 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
         updated_state = replace(
             record.state, qty=remaining, scaled_out=True,
             peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
+            trailing_stop_streak=decision.trailing_stop_streak,
         )
         await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
 

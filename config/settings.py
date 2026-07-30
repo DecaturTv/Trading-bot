@@ -77,6 +77,12 @@ class Settings(BaseSettings):
     # quote — the underlying hadn't actually confirmed a move against the
     # position. See project memory.
     stop_loss_confirmation_count: int = 2
+    # Same as stop_loss_confirmation_count, but for the trailing-stop pullback
+    # check that runs after a position has scaled out: current_value_per_unit
+    # is a mid-price snapshot, so a single noisy quote (wide bid/ask on a thin
+    # option) can otherwise trip a pullback that hasn't actually happened.
+    # Added 2026-07-29.
+    trailing_stop_confirmation_count: int = 2
     # Require a trade signal (entry, or a reversal against an open position)
     # to hold in the same direction for this many consecutive scan/check
     # cycles before acting on it — a single-tick whipsaw shouldn't be enough
@@ -208,7 +214,7 @@ class Settings(BaseSettings):
             raise ValueError("min_trading_days_before_expiry must be >= 0")
         return v
 
-    @field_validator("stop_loss_confirmation_count", "signal_confirmation_count")
+    @field_validator("stop_loss_confirmation_count", "signal_confirmation_count", "trailing_stop_confirmation_count")
     @classmethod
     def _validate_stop_loss_confirmation_count(cls, v: int) -> int:
         if v < 1:

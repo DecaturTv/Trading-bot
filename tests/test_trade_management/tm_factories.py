@@ -32,10 +32,11 @@ def make_contract(
 def make_config(**overrides):
     # Matches the confirmed project rules: -50% stop, +100% scale-out, 20%
     # trailing pullback thereafter, force-close 2 trading days before expiry.
-    # stop_loss_confirmation_count/reversal_confirmation_count default to 1
-    # (fires on the first breach/reversal) so existing single-snapshot tests
-    # don't need to change; tests that care about confirmation behavior
-    # override them explicitly.
+    # stop_loss_confirmation_count/reversal_confirmation_count/
+    # trailing_stop_confirmation_count default to 1 (fires on the first
+    # breach/reversal/pullback) so existing single-snapshot tests don't need
+    # to change; tests that care about confirmation behavior override them
+    # explicitly.
     defaults = dict(
         stop_loss_pct=0.50,
         profit_target_pct=1.00,
@@ -44,6 +45,7 @@ def make_config(**overrides):
         min_trading_days_before_expiry=2,
         stop_loss_confirmation_count=1,
         reversal_confirmation_count=1,
+        trailing_stop_confirmation_count=1,
     )
     defaults.update(overrides)
     return TradeManagementConfig(**defaults)

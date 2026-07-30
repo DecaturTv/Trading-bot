@@ -28,7 +28,7 @@ def make_account(equity=10000.0, cash=10000.0, buying_power=10000.0):
 
 def make_position_record(
     symbol="AAPL", qty=2, entry_cost=500.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0,
-    reversal_streak=0, direction=TradeDirection.BULLISH, expiration=date(2026, 9, 18),
+    reversal_streak=0, trailing_stop_streak=0, direction=TradeDirection.BULLISH, expiration=date(2026, 9, 18),
 ):
     return OpenPositionRecord(
         symbol=symbol,
@@ -44,13 +44,14 @@ def make_position_record(
         state=PositionState(
             symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out,
             peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak, reversal_streak=reversal_streak,
+            trailing_stop_streak=trailing_stop_streak,
         ),
     )
 
 
 def make_stock_position_record(
     symbol="AAPL", qty=10, entry_cost=150.0, scaled_out=False, peak_gain_pct=0.0, stop_loss_streak=0,
-    reversal_streak=0, direction=TradeDirection.BULLISH,
+    reversal_streak=0, trailing_stop_streak=0, direction=TradeDirection.BULLISH,
 ):
     return OpenStockPositionRecord(
         symbol=symbol,
@@ -59,6 +60,7 @@ def make_stock_position_record(
         state=PositionState(
             symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=scaled_out,
             peak_gain_pct=peak_gain_pct, stop_loss_streak=stop_loss_streak, reversal_streak=reversal_streak,
+            trailing_stop_streak=trailing_stop_streak,
         ),
     )
 
@@ -130,7 +132,7 @@ def make_context(**overrides) -> AppContext:
     ctx.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
-        reversal_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=1,
     )
     ctx.position_repository = AsyncMock()
     ctx.position_repository.get.return_value = None

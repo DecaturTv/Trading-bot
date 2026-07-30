@@ -7,12 +7,15 @@ from trade_management.models import PositionState
 
 from .models import OpenStockPositionRecord
 
-_COLUMNS = "symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak"
+_COLUMNS = (
+    "symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, "
+    "reversal_streak, trailing_stop_streak"
+)
 
 _UPSERT_SQL = """
 INSERT INTO stock_positions
-    (symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    (symbol, direction, entry_date, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak, trailing_stop_streak, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 ON CONFLICT (symbol) DO UPDATE SET
     direction = EXCLUDED.direction,
     entry_date = EXCLUDED.entry_date,
@@ -22,6 +25,7 @@ ON CONFLICT (symbol) DO UPDATE SET
     peak_gain_pct = EXCLUDED.peak_gain_pct,
     stop_loss_streak = EXCLUDED.stop_loss_streak,
     reversal_streak = EXCLUDED.reversal_streak,
+    trailing_stop_streak = EXCLUDED.trailing_stop_streak,
     updated_at = EXCLUDED.updated_at
 """
 
@@ -43,6 +47,7 @@ def _row_to_record(row) -> OpenStockPositionRecord:
             peak_gain_pct=row["peak_gain_pct"],
             stop_loss_streak=row["stop_loss_streak"],
             reversal_streak=row["reversal_streak"],
+            trailing_stop_streak=row["trailing_stop_streak"],
         ),
     )
 
@@ -68,6 +73,7 @@ class StockPositionRepository:
                 record.state.peak_gain_pct,
                 record.state.stop_loss_streak,
                 record.state.reversal_streak,
+                record.state.trailing_stop_streak,
                 updated_at,
             )
 

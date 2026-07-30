@@ -23,6 +23,7 @@ def make_engine(confidence_threshold=90, target_dte=60, fallback_fraction=0.1, *
     tm_defaults = dict(
         stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50, trailing_stop_pct=0.20,
         min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
+        trailing_stop_confirmation_count=1,
     )
     tm_defaults.update(tm_overrides)
     tm_config = TradeManagementConfig(**tm_defaults)

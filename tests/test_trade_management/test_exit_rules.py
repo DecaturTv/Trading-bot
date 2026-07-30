@@ -9,7 +9,7 @@ from trade_management.models import ExitAction, PositionState, TradeManagementCo
 def make_position(**overrides):
     defaults = dict(
         symbol="AAPL", qty=4, entry_cost_per_unit=500.0, scaled_out=False, peak_gain_pct=0.0,
-        stop_loss_streak=0, reversal_streak=0,
+        stop_loss_streak=0, reversal_streak=0, trailing_stop_streak=0,
     )
     defaults.update(overrides)
     return PositionState(**defaults)
@@ -185,6 +185,7 @@ def test_config_rejects_non_positive_reversal_confirmation_count():
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=0,
+            trailing_stop_confirmation_count=1,
         )
 
 
@@ -216,6 +217,7 @@ def test_trailing_stop_triggers_after_scale_out_on_pullback():
 
     assert decision.action is ExitAction.TRAILING_STOP
     assert decision.qty_to_close == position.qty
+    assert decision.trailing_stop_streak == 1
 
 
 def test_trailing_stop_does_not_trigger_within_tolerance():
@@ -226,6 +228,48 @@ def test_trailing_stop_does_not_trigger_within_tolerance():
     decision = evaluate_exit(position, current_value_per_unit=950.0, trading_days_to_expiry=10, config=config)
 
     assert decision.action is ExitAction.NONE
+    assert decision.trailing_stop_streak == 0
+
+
+def test_trailing_stop_waits_for_confirmation_before_closing():
+    config = make_config(trailing_stop_pct=0.20, trailing_stop_confirmation_count=3)
+    position = make_position(entry_cost_per_unit=500.0, scaled_out=True, peak_gain_pct=1.50, trailing_stop_streak=0)
+
+    decision = evaluate_exit(position, current_value_per_unit=600.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.NONE
+    assert decision.trailing_stop_streak == 1
+
+
+def test_trailing_stop_closes_once_confirmation_count_reached():
+    config = make_config(trailing_stop_pct=0.20, trailing_stop_confirmation_count=3)
+    position = make_position(entry_cost_per_unit=500.0, scaled_out=True, peak_gain_pct=1.50, trailing_stop_streak=2)
+
+    decision = evaluate_exit(position, current_value_per_unit=600.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.TRAILING_STOP
+    assert decision.qty_to_close == position.qty
+    assert decision.trailing_stop_streak == 3
+
+
+def test_trailing_stop_streak_resets_once_back_within_tolerance():
+    config = make_config(trailing_stop_pct=0.20, trailing_stop_confirmation_count=3)
+    position = make_position(entry_cost_per_unit=500.0, scaled_out=True, peak_gain_pct=1.00, trailing_stop_streak=2)
+
+    # current gain = (950-500)/500 = 0.90; pullback = 0.10 < 0.20
+    decision = evaluate_exit(position, current_value_per_unit=950.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.NONE
+    assert decision.trailing_stop_streak == 0
+
+
+def test_config_rejects_non_positive_trailing_stop_confirmation_count():
+    with pytest.raises(ValueError):
+        TradeManagementConfig(
+            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
+            trailing_stop_confirmation_count=0,
+        )
 
 
 def test_expiry_exit_takes_priority_over_everything_else():
@@ -244,6 +288,7 @@ def test_config_rejects_non_positive_stop_loss():
         TradeManagementConfig(
             stop_loss_pct=0.0, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
+            trailing_stop_confirmation_count=1,
         )
 
 
@@ -252,6 +297,7 @@ def test_config_rejects_invalid_scale_out_fraction():
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=1.5, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
+            trailing_stop_confirmation_count=1,
         )
 
 
@@ -260,6 +306,7 @@ def test_config_rejects_negative_min_dte():
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=-1, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
+            trailing_stop_confirmation_count=1,
         )
 
 
@@ -268,4 +315,5 @@ def test_config_rejects_non_positive_stop_loss_confirmation_count():
         TradeManagementConfig(
             stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=0, reversal_confirmation_count=1,
+            trailing_stop_confirmation_count=1,
         )

@@ -22,6 +22,7 @@ class TradeManagementConfig:
     min_trading_days_before_expiry: int  # force-close this many trading days before expiration
     stop_loss_confirmation_count: int  # consecutive breaching checks required before a stop-loss actually closes
     reversal_confirmation_count: int  # consecutive checks the signal must oppose entry_direction before a reversal-exit closes
+    trailing_stop_confirmation_count: int  # consecutive breaching checks required before a trailing-stop pullback actually closes
 
     def __post_init__(self):
         for name in ("stop_loss_pct", "profit_target_pct", "trailing_stop_pct"):
@@ -36,6 +37,8 @@ class TradeManagementConfig:
             raise ValueError("stop_loss_confirmation_count must be >= 1")
         if self.reversal_confirmation_count < 1:
             raise ValueError("reversal_confirmation_count must be >= 1")
+        if self.trailing_stop_confirmation_count < 1:
+            raise ValueError("trailing_stop_confirmation_count must be >= 1")
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,7 @@ class PositionState:
     peak_gain_pct: float = 0.0  # highest unrealized gain % observed since entry
     stop_loss_streak: int = 0  # consecutive position-checks where unrealized loss has breached stop_loss_pct
     reversal_streak: int = 0  # consecutive position-checks where the current signal has opposed the entry direction
+    trailing_stop_streak: int = 0  # consecutive position-checks where the pullback from peak gain has breached trailing_stop_pct
 
 
 @dataclass(frozen=True)
@@ -94,3 +98,4 @@ class ExitDecision:
     reason: str
     stop_loss_streak: int  # streak value the caller should persist on PositionState, win or lose this check
     reversal_streak: int = 0  # streak value the caller should persist on PositionState, win or lose this check
+    trailing_stop_streak: int = 0  # streak value the caller should persist on PositionState, win or lose this check
