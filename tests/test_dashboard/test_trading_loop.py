@@ -100,6 +100,24 @@ async def test_entry_cycle_skips_when_signal_does_not_meet_threshold():
     await entry_cycle(context, MARKET_OPEN_TUESDAY)
 
     context.broker.get_option_chain.assert_not_awaited()
+    context.feature_store_repository.record_snapshot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_snapshots_qualifying_signal_even_when_not_yet_confirmed():
+    context = make_context()
+    context.settings.signal_confirmation_count = 3
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal(confidence=95.0)
+    context.signal_confirmation_repository.get.return_value = None  # first qualifying scan, won't confirm
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.get_option_chain.assert_not_awaited()
+    context.feature_store_repository.record_snapshot.assert_awaited_once_with(
+        "AAPL", MARKET_OPEN_TUESDAY, {"momentum": 0.9}, 95.0, "bullish",
+    )
 
 
 @pytest.mark.asyncio

@@ -97,6 +97,17 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         await context.signal_confirmation_repository.clear(symbol, _SIGNAL_VEHICLE, timeframe)
         return
 
+    # Snapshot the confidence/factors at scan time, independent of whether
+    # this signal goes on to confirm and enter. bars get upserted in place as
+    # ingestion catches up (see data/bars_repository.py), so replaying a past
+    # scan against today's stored bars can silently diverge from what was
+    # actually live -- this is the only faithful record of what a near-miss
+    # (or a confirmed entry) actually scored.
+    factor_values = {f.name: f.value for f in signal.factors}
+    await context.feature_store_repository.record_snapshot(
+        symbol, now, factor_values, signal.confidence, signal.direction.value
+    )
+
     # Require the signal to hold for signal_confirmation_count consecutive
     # scans (on this timeframe) before acting on it -- a single noisy tick
     # shouldn't be enough to open a position. See config/settings.py
