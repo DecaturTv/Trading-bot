@@ -28,6 +28,10 @@ class BacktestConfig:
     volatility_lookback: int = 20
     risk_free_rate: float = 0.0
     warmup_bars: int = 60
+    # Mirrors config.settings.Settings.signal_confirmation_count: an entry
+    # signal must hold for this many consecutive bars before the engine acts
+    # on it, same as the live entry loops (see decision_engine/confirmation.py).
+    signal_confirmation_count: int = 3
 
     def __post_init__(self):
         if self.starting_equity <= 0:
@@ -40,6 +44,8 @@ class BacktestConfig:
             raise ValueError("target_dte must be positive")
         if self.warmup_bars < 1:
             raise ValueError("warmup_bars must be >= 1")
+        if self.signal_confirmation_count < 1:
+            raise ValueError("signal_confirmation_count must be >= 1")
 
 
 @dataclass(frozen=True)

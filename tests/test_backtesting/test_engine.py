@@ -17,7 +17,7 @@ from backtesting.models import BacktestConfig
 MOMENTUM_ONLY_WEIGHTS = {"momentum": 1.0, "trend": 0.0, "macd": 0.0, "unusual_volume": 0.0, "gap": 0.0}
 
 
-def make_engine(confidence_threshold=90, target_dte=60, fallback_fraction=0.1, **tm_overrides):
+def make_engine(confidence_threshold=90, target_dte=60, fallback_fraction=0.1, signal_confirmation_count=1, **tm_overrides):
     model = WeightedFactorModel(weights=MOMENTUM_ONLY_WEIGHTS)
     kelly = KellySizer(fallback_fraction=fallback_fraction, min_sample_size=100)
     tm_defaults = dict(
@@ -30,6 +30,7 @@ def make_engine(confidence_threshold=90, target_dte=60, fallback_fraction=0.1, *
     config = BacktestConfig(
         starting_equity=10000, confidence_threshold=confidence_threshold, target_delta=0.4,
         target_dte=target_dte, volatility_lookback=20, warmup_bars=40,
+        signal_confirmation_count=signal_confirmation_count,
     )
     return BacktestEngine(model, kelly, tm_config, config)
 
@@ -60,7 +61,13 @@ def test_no_entry_when_confidence_never_clears_threshold():
 
 
 def test_stop_loss_closes_full_position_at_a_loss():
-    engine = make_engine()
+    # signal_confirmation_count=2: the sharp decline's RSI whipsaw briefly
+    # re-clears the (now more sensitive, see decision_engine/factors.py
+    # momentum_factor) bearish threshold for a single bar right at the end of
+    # the window -- without requiring 2 consecutive confirming bars, the
+    # engine would spuriously open a second (correctly-directioned but
+    # unintended) position that immediately gets force-closed at data end.
+    engine = make_engine(signal_confirmation_count=2)
     closes, rng = rising_closes_with_noise()
     for _ in range(15):
         closes.append(closes[-1] + (-1.5 + rng.uniform(-0.4, 0.4)))
@@ -104,9 +111,15 @@ def test_scale_out_then_trailing_stop_on_remainder():
 
 
 def test_expiry_exit_force_closes_regardless_of_pnl():
-    engine = make_engine(target_dte=5)  # short expiration forces an early exit
+    # signal_confirmation_count=2, same rationale as the stop-loss test above.
+    # Only 5 bars past the entry: RSI's Wilder smoothing keeps momentum
+    # pegged near its saturated bullish reading for a long time after a rally
+    # even once price goes flat, so a longer flat window would let the engine
+    # (correctly) re-enter once the first position expires -- this window is
+    # sized to cover exactly the one entry/expiry pair under test.
+    engine = make_engine(target_dte=5, signal_confirmation_count=2)  # short expiration forces an early exit
     closes, rng = rising_closes_with_noise()
-    for _ in range(10):
+    for _ in range(5):
         closes.append(closes[-1] + rng.uniform(-0.2, 0.2))  # flat-ish: no stop/target trigger
     bars = make_bars(closes, spread=0.3)
 

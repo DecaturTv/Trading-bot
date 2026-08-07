@@ -3,6 +3,7 @@ from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
 from broker.models import Bar, OptionRight, OrderSide
+from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
 from decision_engine.scoring import WeightedFactorModel
 from options.models import StrategyType
@@ -81,6 +82,8 @@ class BacktestEngine:
         trades: list[SimulatedTrade] = []
         open_position: _OpenPosition | None = None
         last_vol: float | None = None
+        confirmation_direction: TradeDirection | None = None
+        confirmation_streak = 0
 
         for i in range(self._config.warmup_bars, len(bars)):
             window = bars[: i + 1]
@@ -99,7 +102,9 @@ class BacktestEngine:
                     equity_curve.append(equity)
                 continue
 
-            open_position = self._maybe_enter(symbol, window, current_bar, as_of, vol, equity, trades)
+            open_position, confirmation_direction, confirmation_streak = self._maybe_enter(
+                symbol, window, current_bar, as_of, vol, equity, trades, confirmation_direction, confirmation_streak
+            )
 
         if open_position is not None and last_vol is not None:
             equity = self._force_close(
@@ -156,11 +161,20 @@ class BacktestEngine:
         )
         return equity, open_position
 
-    def _maybe_enter(self, symbol, window, current_bar, as_of, vol, equity, trades):
+    def _maybe_enter(self, symbol, window, current_bar, as_of, vol, equity, trades, confirmation_direction, confirmation_streak):
         scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, window)) is not None]
         signal = self._decision_model.score(symbol, window, scan_hits, self._config.confidence_threshold)
         if not signal.meets_threshold or signal.direction is TradeDirection.NEUTRAL:
-            return None
+            return None, None, 0
+
+        # Require the signal to hold for signal_confirmation_count consecutive
+        # bars before acting on it, same as the live entry loops (see
+        # dashboard/trading_loop.py) -- otherwise a single noisy bar can open
+        # (and immediately stop out of) a position the live strategy would
+        # never have entered, silently diverging backtest from live behavior.
+        streak = update_streak(signal.direction, confirmation_direction, confirmation_streak)
+        if not is_confirmed(streak, self._config.signal_confirmation_count):
+            return None, signal.direction, streak
 
         right = OptionRight.CALL if signal.direction is TradeDirection.BULLISH else OptionRight.PUT
         expiration = _target_dte_to_expiration(as_of, self._config.target_dte)
@@ -173,16 +187,16 @@ class BacktestEngine:
 
         entry_cost = simulated_strategy_value([leg], current_bar.close, as_of, vol, self._config.risk_free_rate)
         if entry_cost <= 0:
-            return None
+            return None, signal.direction, streak
 
         stats = compute_trade_statistics(trades)
         kelly_result = self._kelly_sizer.size(stats)
         budget = position_budget_dollars(equity, kelly_result)
         qty = contracts_for_budget(budget, entry_cost)
         if qty <= 0:
-            return None
+            return None, signal.direction, streak
 
-        return _OpenPosition(
+        position = _OpenPosition(
             legs=[leg],
             expiration=expiration,
             strategy_type=StrategyType.LONG_CALL if right is OptionRight.CALL else StrategyType.LONG_PUT,
@@ -190,6 +204,7 @@ class BacktestEngine:
             entry_date=as_of,
             state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=False, peak_gain_pct=0.0),
         )
+        return position, None, 0
 
     def _force_close(self, symbol, open_position, last_bar, as_of, vol, equity, trades):
         current_value = simulated_strategy_value(
