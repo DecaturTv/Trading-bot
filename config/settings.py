@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     account_start_balance: float = 500.0
 
     # Risk defaults
-    confidence_threshold: int = 90
+    confidence_threshold: int = 85
     kelly_fraction: float = 0.25
     daily_loss_limit_pct: float = 0.05
     weekly_loss_limit_pct: float = 0.10
@@ -113,7 +113,7 @@ class Settings(BaseSettings):
     # each on its own timeframe/interval, so a symbol can signal off a faster
     # setup instead of waiting for a daily close. Interval matches each
     # timeframe's own bar duration: no point rescanning 1h bars every 5min.
-    intraday_5m_scan_interval_seconds: int = 300
+    intraday_5m_scan_interval_seconds: int = 60
     intraday_15m_scan_interval_seconds: int = 900
     intraday_1h_scan_interval_seconds: int = 3600
 
