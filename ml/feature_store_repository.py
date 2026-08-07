@@ -20,6 +20,17 @@ WHERE pnl IS NOT NULL
 ORDER BY as_of
 """
 
+# symbol_pattern lets callers scope the labeled dataset to one asset class
+# without a dedicated column on this table -- OANDA pairs are always
+# THREE_THREE (e.g. EUR_USD) which no equities/options symbol matches, the
+# same regex used to backfill asset_class on ml_trade_outcomes.
+_LABELED_DATASET_BY_SYMBOL_PATTERN_SQL = """
+SELECT id, symbol, as_of, factors, confidence, direction, pnl, win
+FROM ml_feature_snapshots
+WHERE pnl IS NOT NULL AND symbol ~ $1
+ORDER BY as_of
+"""
+
 
 class FeatureStoreRepository:
     """Records the feature vector behind each trade signal at decision time
@@ -41,9 +52,12 @@ class FeatureStoreRepository:
         async with self._pool.acquire() as conn:
             await conn.execute(_RECORD_OUTCOME_SQL, snapshot_id, pnl, pnl > 0)
 
-    async def get_labeled_dataset(self) -> list[FeatureSnapshot]:
+    async def get_labeled_dataset(self, symbol_pattern: str | None = None) -> list[FeatureSnapshot]:
         async with self._pool.acquire() as conn:
-            records = await conn.fetch(_LABELED_DATASET_SQL)
+            if symbol_pattern is None:
+                records = await conn.fetch(_LABELED_DATASET_SQL)
+            else:
+                records = await conn.fetch(_LABELED_DATASET_BY_SYMBOL_PATTERN_SQL, symbol_pattern)
         return [
             FeatureSnapshot(
                 id=r["id"],

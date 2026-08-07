@@ -165,6 +165,24 @@ def test_get_trade_history_returns_full_records():
     context.trade_outcome_repository.recent_trades.assert_awaited_once_with(limit=50, asset_class="forex")
 
 
+def test_get_forex_performance_returns_aggregated_report():
+    context = make_context()
+    context.trade_outcome_repository.recent_trades.return_value = [
+        {"symbol": "EUR_USD", "closed_at": "2026-07-23T12:00:00Z", "pnl": -5.0, "asset_class": "forex", "details": {}},
+    ]
+    context.feature_store_repository.get_labeled_dataset.return_value = []
+    with make_client(context) as client:
+        response = client.get("/api/forex/performance", headers=AUTH)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["trade_count"] == 1
+    assert body["win_rate"] == 0.0
+    assert body["total_pnl"] == -5.0
+    assert body["by_pair"][0]["symbol"] == "EUR_USD"
+    context.trade_outcome_repository.recent_trades.assert_awaited_once_with(limit=200, asset_class="forex")
+    context.feature_store_repository.get_labeled_dataset.assert_awaited_once()
+
+
 def test_static_index_served_at_root():
     with make_client(make_context()) as client:
         response = client.get("/")

@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Request
 
+from ml.forex_performance import FOREX_SYMBOL_PATTERN, build_forex_performance_report
 from risk.statistics import compute_trade_statistics
 
 from .context import AppContext, get_effective_account, get_effective_forex_account
@@ -93,6 +94,17 @@ async def get_trade_outcomes(request: Request, limit: int = 50, asset_class: str
     context = _context(request)
     pnls = await context.trade_outcome_repository.recent_pnls(limit=limit, asset_class=asset_class)
     return {"recent_pnls": pnls, "statistics": compute_trade_statistics(pnls)}
+
+
+@router.get("/forex/performance")
+async def get_forex_performance(request: Request, limit: int = 200):
+    # Win rate / expectancy by pair, plus per-factor agreement-with-outcome
+    # (which factors' signals actually matched winners vs losers) -- the
+    # aggregated view /trade-history and /trade-outcomes don't provide.
+    context = _context(request)
+    trades = await context.trade_outcome_repository.recent_trades(limit=limit, asset_class="forex")
+    snapshots = await context.feature_store_repository.get_labeled_dataset(symbol_pattern=FOREX_SYMBOL_PATTERN)
+    return build_forex_performance_report(trades, snapshots)
 
 
 @router.get("/trade-history")

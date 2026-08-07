@@ -63,3 +63,17 @@ async def test_labeled_dataset_ordered_by_as_of(pool):
 
     dataset = await repo.get_labeled_dataset()
     assert [s.symbol for s in dataset] == ["AAPL", "TSLA"]
+
+
+@pytest.mark.asyncio
+async def test_get_labeled_dataset_filters_by_symbol_pattern(pool):
+    repo = FeatureStoreRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    equities_id = await repo.record_snapshot("AAPL", now, {"momentum": 0.2}, confidence=60.0, direction="bullish")
+    forex_id = await repo.record_snapshot("EUR_USD", now, {"momentum": 0.3}, confidence=70.0, direction="bullish")
+    await repo.record_outcome(equities_id, pnl=20.0)
+    await repo.record_outcome(forex_id, pnl=-5.0)
+
+    dataset = await repo.get_labeled_dataset(symbol_pattern=r"^[A-Z]{3}_[A-Z]{3}$")
+    assert [s.symbol for s in dataset] == ["EUR_USD"]
