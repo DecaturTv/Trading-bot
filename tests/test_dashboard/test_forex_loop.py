@@ -11,6 +11,7 @@ from dashboard.forex_loop import (
     forex_progress_report_cycle,
 )
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
+from decision_engine.signal_confirmation_repository import SignalConfirmationState
 from forex.oanda_adapter import TradeNotSettledError
 
 MARKET_OPEN_TUESDAY = datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)
@@ -103,6 +104,72 @@ async def test_entry_cycle_skips_when_signal_does_not_meet_threshold():
     await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
 
     context.forex_broker.get_pricing.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_clears_confirmation_streak_when_signal_no_longer_qualifies():
+    context = make_context()
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.forex_decision_model.score.return_value = neutral_signal()
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.signal_confirmation_repository.clear.assert_awaited_once_with("EUR_USD", "forex", "H1")
+    context.signal_confirmation_repository.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_awaits_signal_confirmation_before_opening():
+    context = make_context()
+    context.settings.signal_confirmation_count = 3
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.forex_decision_model.score.return_value = bullish_signal()
+    context.signal_confirmation_repository.get.return_value = None  # first qualifying scan
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.get_pricing.assert_not_awaited()
+    context.forex_broker.submit_market_order.assert_not_awaited()
+    context.signal_confirmation_repository.upsert.assert_awaited_once()
+    args = context.signal_confirmation_repository.upsert.call_args.args
+    assert args[0] == "EUR_USD" and args[1] == "forex" and args[2] == "H1"
+    assert args[3] is TradeDirection.BULLISH
+    assert args[4] == 1
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_snapshots_qualifying_signal_even_when_not_yet_confirmed():
+    context = make_context()
+    context.settings.signal_confirmation_count = 3
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.forex_decision_model.score.return_value = bullish_signal(confidence=95.0)
+    context.signal_confirmation_repository.get.return_value = None  # first qualifying scan, won't confirm
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.submit_market_order.assert_not_awaited()
+    context.feature_store_repository.record_snapshot.assert_awaited_once_with(
+        "EUR_USD", MARKET_OPEN_TUESDAY, {"momentum": 0.9}, 95.0, "bullish",
+    )
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_opens_once_signal_confirmation_count_reached():
+    context = make_context()
+    context.settings.signal_confirmation_count = 3
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.forex_decision_model.score.return_value = bullish_signal()
+    context.signal_confirmation_repository.get.return_value = SignalConfirmationState(
+        direction=TradeDirection.BULLISH, streak=2, updated_at=MARKET_OPEN_TUESDAY,
+    )
+    context.forex_broker.get_pricing.return_value = (1.0998, 1.1000)
+    context.forex_broker.submit_market_order.return_value = "trade-1"
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.submit_market_order.assert_awaited_once()
+    context.signal_confirmation_repository.clear.assert_awaited_once_with("EUR_USD", "forex", "H1")
 
 
 @pytest.mark.asyncio

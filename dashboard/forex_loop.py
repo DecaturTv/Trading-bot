@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 from alerts.models import Alert, Severity
 from broker.models import OrderSide
+from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
 from forex.conversion import quote_to_account_rate
 from forex.exposure import check_currency_concentration
@@ -23,6 +24,8 @@ _CANDLE_LOOKBACK = 100
 _MIN_CANDLES_FOR_SIGNAL = 30
 _ATR_PERIOD = 14
 _SCAN_FUNCTIONS = (scan_unusual_volume, scan_gap, scan_momentum)
+_SIGNAL_VEHICLE = "forex"
+_SIGNAL_TIMEFRAME = "H1"  # matches the granularity get_candles always fetches
 
 EventCallback = Callable[[dict], Awaitable[None]] | None
 
@@ -80,6 +83,34 @@ async def _maybe_enter_forex(
     scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(pair, bars)) is not None]
     signal = context.forex_decision_model.score(pair, bars, scan_hits, context.settings.forex_confidence_threshold)
     if not signal.meets_threshold or signal.direction is TradeDirection.NEUTRAL:
+        await context.signal_confirmation_repository.clear(pair, _SIGNAL_VEHICLE, _SIGNAL_TIMEFRAME)
+        return
+
+    # Snapshot the confidence/factors at scan time, independent of whether
+    # this signal goes on to confirm and enter -- same reasoning as the
+    # options/stock entry cycles (see dashboard/trading_loop.py).
+    factor_values = {f.name: f.value for f in signal.factors}
+    snapshot_id = await context.feature_store_repository.record_snapshot(
+        pair, now, factor_values, signal.confidence, signal.direction.value
+    )
+
+    # Require the signal to hold for signal_confirmation_count consecutive
+    # scans before acting on it -- a single noisy tick shouldn't be enough to
+    # open a position. Ported from the stock/options entry cycles (commit
+    # c55bc0f) which added this after two daily-loss-limit halts traced to
+    # single-scan entries; forex never got the same fix even though it's the
+    # same entry pattern, and traded at a 27% win rate as a result. See
+    # project memory on forex performance.
+    confirmation = await context.signal_confirmation_repository.get(pair, _SIGNAL_VEHICLE, _SIGNAL_TIMEFRAME)
+    previous_direction = confirmation.direction if confirmation else None
+    previous_streak = confirmation.streak if confirmation else 0
+    streak = update_streak(signal.direction, previous_direction, previous_streak)
+    await context.signal_confirmation_repository.upsert(pair, _SIGNAL_VEHICLE, _SIGNAL_TIMEFRAME, signal.direction, streak, now)
+    if not is_confirmed(streak, context.settings.signal_confirmation_count):
+        logger.info(
+            "forex entry cycle skipped %s: signal %s met threshold but awaiting confirmation (%d/%d)",
+            pair, signal.direction.value, streak, context.settings.signal_confirmation_count,
+        )
         return
 
     atr_values = atr(bars, _ATR_PERIOD)
@@ -115,11 +146,6 @@ async def _maybe_enter_forex(
         )
         return
 
-    factor_values = {f.name: f.value for f in signal.factors}
-    snapshot_id = await context.feature_store_repository.record_snapshot(
-        pair, now, factor_values, signal.confidence, signal.direction.value
-    )
-
     trade_id = await context.forex_broker.submit_market_order(pair, units, side, stop_distance, take_profit_price)
 
     position = OpenForexPosition(
@@ -135,6 +161,7 @@ async def _maybe_enter_forex(
     )
     await context.forex_position_repository.upsert(position)
 
+    await context.signal_confirmation_repository.clear(pair, _SIGNAL_VEHICLE, _SIGNAL_TIMEFRAME)
     await context.alert_manager.send(
         Alert(
             title=f"Opened {side.value} on {pair}",
