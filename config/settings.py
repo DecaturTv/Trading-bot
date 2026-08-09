@@ -30,6 +30,14 @@ class Settings(BaseSettings):
 
     # Risk defaults
     confidence_threshold: int = 85
+    # Stocks score entries on 1Day bars only (see dashboard/stock_loop.py),
+    # where gap/volume-spike/candlestick/congress factors fire far less often
+    # than on the options loop's intraday timeframes -- confirmed live
+    # against the real universe on 2026-08-09, best real signal was 76
+    # (PLTR), next-best 62. The shared confidence_threshold (85, tuned for
+    # options' intraday timeframes) was unreachable on 1Day, so stock entries
+    # had been at zero for the entire prior week. See project memory.
+    stock_confidence_threshold: int = 65
     kelly_fraction: float = 0.25
     daily_loss_limit_pct: float = 0.05
     weekly_loss_limit_pct: float = 0.10
@@ -172,7 +180,7 @@ class Settings(BaseSettings):
             )
         return self
 
-    @field_validator("confidence_threshold", "forex_confidence_threshold")
+    @field_validator("confidence_threshold", "forex_confidence_threshold", "stock_confidence_threshold")
     @classmethod
     def _validate_confidence_threshold(cls, v: int) -> int:
         if not 0 <= v <= 100:

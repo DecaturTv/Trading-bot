@@ -84,6 +84,7 @@ def make_context(**overrides) -> AppContext:
     ctx.settings = MagicMock(
         dashboard_auth_token="test-token",
         confidence_threshold=92,
+        stock_confidence_threshold=92,
         option_target_delta=0.40,
         option_target_dte=45,
         # Generous on purpose: most fixtures use a fixed EXPIRY constant that

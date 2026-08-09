@@ -70,7 +70,7 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
         symbol, now, lookback_days=context.settings.congress_lookback_days
     )
     signal = context.decision_model.score(
-        symbol, bars, scan_hits, context.settings.confidence_threshold,
+        symbol, bars, scan_hits, context.settings.stock_confidence_threshold,
         congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
     )
     # Long-only: a bearish signal is the options long_put path's territory,
@@ -199,7 +199,7 @@ async def _current_signal_direction(context: AppContext, symbol: str, now: datet
         symbol, now, lookback_days=context.settings.congress_lookback_days
     )
     signal = context.decision_model.score(
-        symbol, bars, scan_hits, context.settings.confidence_threshold,
+        symbol, bars, scan_hits, context.settings.stock_confidence_threshold,
         congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
     )
     return signal.direction if signal.meets_threshold else TradeDirection.NEUTRAL

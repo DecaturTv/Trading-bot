@@ -9,6 +9,7 @@ def test_defaults_are_paper_mode():
     assert settings.trading_mode == "paper"
     assert settings.live_risk_ack is False
     assert settings.confidence_threshold == 85
+    assert settings.stock_confidence_threshold == 65
     assert settings.kelly_fraction == 0.25
 
 
@@ -35,6 +36,12 @@ def test_live_mode_via_env_vars(monkeypatch):
 def test_confidence_threshold_out_of_range_raises(value):
     with pytest.raises(ValidationError):
         Settings(_env_file=None, confidence_threshold=value)
+
+
+@pytest.mark.parametrize("value", [-1, 101])
+def test_stock_confidence_threshold_out_of_range_raises(value):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, stock_confidence_threshold=value)
 
 
 @pytest.mark.parametrize("value", [0, -0.1, 1.5])
