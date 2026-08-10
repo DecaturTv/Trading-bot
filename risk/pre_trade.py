@@ -39,6 +39,13 @@ class PreTradeChecker:
         self._max_positions_per_symbol = max_positions_per_symbol
         self._max_total_exposure_pct = max_total_exposure_pct
 
+    @property
+    def max_total_exposure_pct(self) -> float:
+        """Exposed so callers can pre-filter candidates that could never pass
+        _check_total_exposure (e.g. scanner/universe.py's price ceiling)
+        without duplicating this threshold as a separate constant."""
+        return self._max_total_exposure_pct
+
     async def evaluate(
         self,
         account: Account,

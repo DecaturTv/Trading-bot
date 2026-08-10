@@ -61,6 +61,17 @@ async def test_entry_cycle_noop_when_market_closed():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_passes_equity_scaled_price_ceiling_to_universe():
+    context = make_context()
+    context.broker.get_account.return_value = make_account(equity=1000.0)
+    context.pre_trade_checker.max_total_exposure_pct = 0.9
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.universe_manager.get_universe.assert_awaited_once_with(MARKET_OPEN_TUESDAY, max_price=900.0)
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_noop_when_halted():
     context = make_context()
     context.halt_manager.is_halted.return_value = True
@@ -218,6 +229,27 @@ async def test_entry_cycle_happy_path_opens_position():
     assert events[0]["type"] == "position_opened"
     assert events[0]["symbol"] == "AAPL"
     assert events[0]["timeframe"] == "1Day"
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_shrinks_size_on_positive_day_streak():
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)])
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+    # equity=10000, position_fraction=0.1 -> budget=1000, net_debit=520 (ask 5.2 * 100) -> qty=1 unshrunk.
+    # A 6-day streak floors the multiplier at 0.4 -> budget=400, too small to afford one contract.
+    context.trade_outcome_repository.daily_pnls.return_value = [
+        (date(2026, 8, d), 10.0) for d in range(5, 11)
+    ]
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.trade_outcome_repository.daily_pnls.assert_awaited_once_with(asset_class="equities")
+    context.executor.execute.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -613,7 +645,7 @@ async def test_loss_limit_check_scopes_halt_and_pnls_to_equities():
 async def test_loss_limit_check_skips_weekly_window_in_paper_mode():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.stock_account_start_balance = 500.0
     # A huge historical loss that would breach the weekly limit if it were
     # computed -- paper mode should never even query for it.
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
@@ -654,7 +686,7 @@ async def test_loss_limit_check_sends_critical_alert_when_triggered():
 async def test_loss_limit_check_paper_mode_never_halts():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.stock_account_start_balance = 500.0
     # Deep breach of both the daily limit -- in live mode this would halt.
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
 
@@ -668,7 +700,7 @@ async def test_loss_limit_check_paper_mode_never_halts():
 async def test_loss_limit_check_paper_mode_notifies_on_breach_without_halting():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.stock_account_start_balance = 500.0
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]  # -200% of $500, breaches 5% daily limit
 
     await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)
@@ -684,7 +716,7 @@ async def test_loss_limit_check_paper_mode_notifies_on_breach_without_halting():
 async def test_loss_limit_check_paper_mode_no_alert_within_limits():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.stock_account_start_balance = 500.0
     context.trade_outcome_repository.pnls_since.return_value = [-10.0]  # -2%, within the 5% limit
 
     await loss_limit_check_cycle(context, MARKET_OPEN_TUESDAY)

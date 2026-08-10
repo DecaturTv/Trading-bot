@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_position_record, make_stock_position_record
@@ -55,7 +55,18 @@ class _FailingCheck:
 async def test_entry_cycle_noop_when_market_closed():
     context = make_context()
     await stock_entry_cycle(context, MARKET_CLOSED_SATURDAY)
-    context.universe_manager.get_universe.assert_not_awaited()
+    context.universe_manager.get_active_symbols.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_passes_equity_scaled_price_ceiling_to_universe():
+    context = make_context()
+    context.broker.get_account.return_value = make_account(equity=1000.0)
+    context.pre_trade_checker.max_total_exposure_pct = 0.9
+
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.universe_manager.get_active_symbols.assert_awaited_once_with(MARKET_OPEN_TUESDAY, max_price=900.0)
 
 
 @pytest.mark.asyncio
@@ -63,13 +74,13 @@ async def test_entry_cycle_noop_when_halted():
     context = make_context()
     context.halt_manager.is_halted.return_value = True
     await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
-    context.universe_manager.get_universe.assert_not_awaited()
+    context.universe_manager.get_active_symbols.assert_not_awaited()
 
 
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_symbol_with_existing_options_position():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.position_repository.get.return_value = make_position_record(symbol="AAPL")
 
     await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
@@ -80,7 +91,7 @@ async def test_entry_cycle_skips_symbol_with_existing_options_position():
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_symbol_with_existing_stock_position():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.stock_position_repository.get.return_value = make_stock_position_record(symbol="AAPL")
 
     await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
@@ -91,7 +102,7 @@ async def test_entry_cycle_skips_symbol_with_existing_stock_position():
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_when_insufficient_bars():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=5)
 
     await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
@@ -102,7 +113,7 @@ async def test_entry_cycle_skips_when_insufficient_bars():
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_when_signal_does_not_meet_threshold():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = neutral_signal()
 
@@ -114,7 +125,7 @@ async def test_entry_cycle_skips_when_signal_does_not_meet_threshold():
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_bearish_signal_long_only():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = bearish_signal()
 
@@ -126,7 +137,7 @@ async def test_entry_cycle_skips_bearish_signal_long_only():
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_when_pre_trade_check_fails():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = bullish_signal()
     context.broker.get_latest_quote.return_value = make_quote()
@@ -140,7 +151,7 @@ async def test_entry_cycle_skips_when_pre_trade_check_fails():
 @pytest.mark.asyncio
 async def test_entry_cycle_skips_when_kelly_sizing_yields_zero_qty():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = bullish_signal()
     context.broker.get_latest_quote.return_value = make_quote()
@@ -155,7 +166,7 @@ async def test_entry_cycle_skips_when_kelly_sizing_yields_zero_qty():
 @pytest.mark.asyncio
 async def test_entry_cycle_happy_path_opens_position():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = bullish_signal()
     context.broker.get_latest_quote.return_value = make_quote(ask=100.0)
@@ -176,10 +187,34 @@ async def test_entry_cycle_happy_path_opens_position():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_shrinks_size_on_positive_day_streak():
+    context = make_context()
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_latest_quote.return_value = make_quote(ask=100.0)
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.broker.get_account.return_value = make_account(equity=10000.0)
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+    context.broker.submit_order.return_value = make_order()
+    # 3-day positive streak -> multiplier 1 - 3*0.1 = 0.7 -> budget 700 (not 1000)
+    context.trade_outcome_repository.daily_pnls.return_value = [
+        (date(2026, 8, 10), 50.0), (date(2026, 8, 9), 20.0), (date(2026, 8, 8), 10.0),
+    ]
+
+    events = []
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
+
+    context.trade_outcome_repository.daily_pnls.assert_awaited_once_with(asset_class="equities")
+    # budget = 10000 * 0.1 * 0.7 streak multiplier ~= 699.9999... (float rounding) // 100.0 ask -> 6, not the un-shrunk 10
+    assert events[0]["qty"] == 6
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_awaits_signal_confirmation_before_opening():
     context = make_context()
     context.settings.signal_confirmation_count = 3
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = bullish_signal()
     context.signal_confirmation_repository.get.return_value = None  # first qualifying scan
@@ -198,7 +233,7 @@ async def test_entry_cycle_awaits_signal_confirmation_before_opening():
 async def test_entry_cycle_opens_once_signal_confirmation_count_reached():
     context = make_context()
     context.settings.signal_confirmation_count = 3
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = bullish_signal()
     context.signal_confirmation_repository.get.return_value = SignalConfirmationState(
@@ -219,7 +254,7 @@ async def test_entry_cycle_opens_once_signal_confirmation_count_reached():
 @pytest.mark.asyncio
 async def test_entry_cycle_clears_confirmation_streak_when_signal_no_longer_qualifies():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = neutral_signal()
 
@@ -233,7 +268,7 @@ async def test_entry_cycle_clears_confirmation_streak_when_signal_no_longer_qual
 async def test_entry_cycle_snapshots_qualifying_signal_even_when_not_yet_confirmed():
     context = make_context()
     context.settings.signal_confirmation_count = 3
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = bullish_signal(confidence=95.0)
     context.signal_confirmation_repository.get.return_value = None  # first qualifying scan, won't confirm
@@ -249,7 +284,7 @@ async def test_entry_cycle_snapshots_qualifying_signal_even_when_not_yet_confirm
 @pytest.mark.asyncio
 async def test_entry_cycle_does_not_snapshot_when_signal_is_neutral():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
     context.bars_repository.get_bars.return_value = make_bars(n=40)
     context.decision_model.score.return_value = neutral_signal()
 
@@ -261,7 +296,7 @@ async def test_entry_cycle_does_not_snapshot_when_signal_is_neutral():
 @pytest.mark.asyncio
 async def test_entry_cycle_continues_after_one_symbol_raises():
     context = make_context()
-    context.universe_manager.get_universe.return_value = ["AAPL", "TSLA"]
+    context.universe_manager.get_active_symbols.return_value = ["AAPL", "TSLA"]
 
     async def get_bars_side_effect(symbol, *args, **kwargs):
         if symbol == "AAPL":

@@ -13,6 +13,7 @@ from forex.oanda_adapter import TradeNotSettledError
 from forex.sizing import units_for_risk
 from indicators.volatility import atr
 from risk.halt_manager import evaluate_loss_limits
+from risk.streak import current_positive_day_streak, streak_adjusted_fraction
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
 from utils.time import is_forex_market_open
 
@@ -138,7 +139,10 @@ async def _maybe_enter_forex(
     if rate is None:
         return  # no tradeable conversion pair -- can't size this correctly, skip rather than guess
 
-    units = units_for_risk(account.equity, context.settings.forex_risk_pct_per_trade, stop_distance, rate)
+    daily_pnls = await context.trade_outcome_repository.daily_pnls(asset_class="forex")
+    positive_day_streak = current_positive_day_streak(daily_pnls)
+    risk_pct = streak_adjusted_fraction(context.settings.forex_risk_pct_per_trade, positive_day_streak)
+    units = units_for_risk(account.equity, risk_pct, stop_distance, rate)
     if units <= 0:
         logger.info(
             "forex entry cycle skipped %s: sized to 0 units (equity=%.2f stop_distance=%.5f rate=%.5f)",

@@ -192,21 +192,23 @@ async def close_context(context: AppContext) -> None:
 
 async def get_effective_account(context: AppContext) -> Account:
     """Wraps broker.get_account() — while paper trading, equity is treated as
-    settings.account_start_balance rather than Alpaca's real (unrealistically
-    large) paper-account equity, so position sizing, exposure/loss-limit
-    checks, and the dashboard all reflect the bankroll actually being
-    simulated. Live trading uses the broker's real equity unmodified."""
+    settings.stock_account_start_balance rather than Alpaca's real
+    (unrealistically large) paper-account equity, so position sizing,
+    exposure/loss-limit checks, and the dashboard all reflect the bankroll
+    actually being simulated. Live trading uses the broker's real equity
+    unmodified."""
     account = await context.broker.get_account()
     if context.settings.trading_mode == "paper":
-        return replace(account, equity=context.settings.account_start_balance)
+        return replace(account, equity=context.settings.stock_account_start_balance)
     return account
 
 
 async def get_effective_forex_account(context: AppContext) -> Account:
     """Same paper-equity override as get_effective_account, applied to the
-    OANDA account instead — one simulated bankroll figure regardless of
-    which broker a given cycle is trading through."""
+    OANDA account instead — its own slice (settings.forex_account_start_balance)
+    of the combined simulated bankroll, since forex trades through a separate
+    broker/account from stock+options."""
     account = await context.forex_broker.get_account()
     if context.settings.trading_mode == "paper":
-        return replace(account, equity=context.settings.account_start_balance)
+        return replace(account, equity=context.settings.forex_account_start_balance)
     return account

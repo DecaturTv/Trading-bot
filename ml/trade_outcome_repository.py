@@ -1,9 +1,18 @@
 import json
-from datetime import datetime
+from datetime import date, datetime
 
 import asyncpg
 
 _INSERT_SQL = "INSERT INTO ml_trade_outcomes (symbol, closed_at, pnl, asset_class, details) VALUES ($1, $2, $3, $4, $5::jsonb)"
+
+_DAILY_PNLS_SQL = """
+SELECT (closed_at AT TIME ZONE 'UTC')::date AS day, SUM(pnl) AS daily_pnl
+FROM ml_trade_outcomes GROUP BY day ORDER BY day DESC
+"""
+_DAILY_PNLS_BY_CLASS_SQL = """
+SELECT (closed_at AT TIME ZONE 'UTC')::date AS day, SUM(pnl) AS daily_pnl
+FROM ml_trade_outcomes WHERE asset_class = $1 GROUP BY day ORDER BY day DESC
+"""
 
 _RECENT_PNLS_SQL = "SELECT pnl FROM ml_trade_outcomes ORDER BY closed_at DESC, id DESC LIMIT $1"
 _RECENT_PNLS_BY_CLASS_SQL = (
@@ -72,6 +81,15 @@ class TradeOutcomeRepository:
             args = (cutoff, asset_class) if asset_class else (cutoff,)
             records = await conn.fetch(sql, *args)
         return [r["pnl"] for r in records]
+
+    async def daily_pnls(self, asset_class: str | None = None) -> list[tuple[date, float]]:
+        """Net P&L per calendar day (UTC), most recent day first. A day with
+        no closed trades has no row at all -- see risk/streak.py, which
+        relies on that to skip rather than break a streak on a quiet day."""
+        async with self._pool.acquire() as conn:
+            sql, args = (_DAILY_PNLS_BY_CLASS_SQL, (asset_class,)) if asset_class else (_DAILY_PNLS_SQL, ())
+            records = await conn.fetch(sql, *args)
+        return [(r["day"], r["daily_pnl"]) for r in records]
 
     async def recent_trades(self, limit: int | None = None, asset_class: str | None = None) -> list[dict]:
         """Full closed-trade records (including details) for post-mortem

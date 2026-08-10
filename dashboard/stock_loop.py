@@ -9,6 +9,7 @@ from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
 from ml.trade_outcomes import get_live_trade_statistics
 from risk.sizing import contracts_for_budget, position_budget_dollars
+from risk.streak import current_positive_day_streak, streak_adjusted_fraction
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
 from stocks.models import OpenStockPositionRecord
 from trade_management.exit_rules import evaluate_exit
@@ -45,7 +46,9 @@ async def stock_entry_cycle(context: AppContext, now: datetime, on_event: EventC
         logger.info("stock entry cycle skipped: trading halted")
         return
 
-    symbols = await context.universe_manager.get_universe(now)
+    account = await get_effective_account(context)
+    max_price = account.equity * context.pre_trade_checker.max_total_exposure_pct
+    symbols = await context.universe_manager.get_active_symbols(now, max_price=max_price)
     logger.info("stock entry cycle: scanning %d symbols", len(symbols))
     for symbol in symbols:
         try:
@@ -133,6 +136,11 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
 
         stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
         kelly_result = context.kelly_sizer.size(stats)
+        daily_pnls = await context.trade_outcome_repository.daily_pnls(asset_class="equities")
+        positive_day_streak = current_positive_day_streak(daily_pnls)
+        kelly_result = replace(
+            kelly_result, position_fraction=streak_adjusted_fraction(kelly_result.position_fraction, positive_day_streak)
+        )
         budget = position_budget_dollars(account.equity, kelly_result)
         qty = contracts_for_budget(budget, entry_price)
         if qty <= 0:

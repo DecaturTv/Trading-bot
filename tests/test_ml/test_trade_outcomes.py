@@ -145,6 +145,37 @@ async def test_recent_trades_roundtrips_details(pool):
 
 
 @pytest.mark.asyncio
+async def test_daily_pnls_aggregates_by_day_most_recent_first(pool):
+    repo = TradeOutcomeRepository(pool)
+    day1 = datetime(2026, 8, 1, 15, 0, tzinfo=timezone.utc)
+    day2 = datetime(2026, 8, 2, 15, 0, tzinfo=timezone.utc)
+    await repo.record_outcome("AAPL", day1, 100.0)
+    await repo.record_outcome("TSLA", day1, -30.0)  # same day as above -> net 70
+    await repo.record_outcome("AAPL", day2, -20.0)
+
+    daily = await repo.daily_pnls()
+
+    assert daily == [(day2.date(), -20.0), (day1.date(), 70.0)]
+
+
+@pytest.mark.asyncio
+async def test_daily_pnls_filters_by_asset_class(pool):
+    repo = TradeOutcomeRepository(pool)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    await repo.record_outcome("AAPL", now, 100.0)
+    await repo.record_outcome("EUR_USD", now, -50.0, asset_class="forex")
+
+    assert await repo.daily_pnls(asset_class="equities") == [(now.date(), 100.0)]
+    assert await repo.daily_pnls(asset_class="forex") == [(now.date(), -50.0)]
+
+
+@pytest.mark.asyncio
+async def test_daily_pnls_omits_days_with_no_trades(pool):
+    repo = TradeOutcomeRepository(pool)
+    assert await repo.daily_pnls() == []
+
+
+@pytest.mark.asyncio
 async def test_recent_trades_respects_limit_and_class_filter(pool):
     repo = TradeOutcomeRepository(pool)
     now = datetime.now(timezone.utc).replace(microsecond=0)

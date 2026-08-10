@@ -13,6 +13,7 @@ from options.selection import select_expiration, select_strike_by_delta
 from options.strategy_builders import build_long_call, build_long_put
 from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
+from risk.streak import current_positive_day_streak, streak_adjusted_fraction
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
 from trade_management.close_order_builder import build_close_order_request
 from trade_management.exit_rules import evaluate_exit
@@ -64,7 +65,13 @@ async def entry_cycle(context: AppContext, now: datetime, on_event: EventCallbac
         logger.info("entry cycle (%s) skipped: trading halted", timeframe)
         return
 
-    symbols = await context.universe_manager.get_universe(now)
+    account = await get_effective_account(context)
+    # Underlying price is a proxy, not the real contract cost (net_debit) --
+    # good enough to drop names structurally too expensive to size into at
+    # all (MSFT/SPY/QQQ/MU-class prices) without fetching a full chain for
+    # every universe symbol just to filter.
+    max_price = account.equity * context.pre_trade_checker.max_total_exposure_pct
+    symbols = await context.universe_manager.get_universe(now, max_price=max_price)
     logger.info("entry cycle (%s): scanning %d symbols", timeframe, len(symbols))
     for symbol in symbols:
         try:
@@ -206,6 +213,11 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
 
         stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
         kelly_result = context.kelly_sizer.size(stats)
+        daily_pnls = await context.trade_outcome_repository.daily_pnls(asset_class="equities")
+        positive_day_streak = current_positive_day_streak(daily_pnls)
+        kelly_result = replace(
+            kelly_result, position_fraction=streak_adjusted_fraction(kelly_result.position_fraction, positive_day_streak)
+        )
         budget = position_budget_dollars(account.equity, kelly_result)
         qty = contracts_for_budget(budget, strategy.net_debit)
         if qty <= 0:

@@ -122,6 +122,7 @@ def make_context(**overrides) -> AppContext:
     ctx.ingestion_service = AsyncMock()
     ctx.universe_manager = AsyncMock()
     ctx.universe_manager.get_universe.return_value = []
+    ctx.universe_manager.get_active_symbols.return_value = []
     ctx.scanner_service = AsyncMock()
     ctx.decision_model = MagicMock()
     ctx.forex_decision_model = MagicMock()
@@ -148,6 +149,7 @@ def make_context(**overrides) -> AppContext:
     ctx.trade_outcome_repository.recent_pnls.return_value = []
     ctx.trade_outcome_repository.pnls_since.return_value = []
     ctx.trade_outcome_repository.recent_trades.return_value = []
+    ctx.trade_outcome_repository.daily_pnls.return_value = []
     ctx.feature_store_repository = AsyncMock()
     ctx.feature_store_repository.record_snapshot.return_value = 1
     ctx.alert_manager = AsyncMock()

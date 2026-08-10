@@ -25,8 +25,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://localhost:5432/trading_bot"
     redis_url: str = "redis://localhost:6379/0"
 
-    # Account
-    account_start_balance: float = 500.0
+    # Account — split from a single combined $1000 paper bankroll. Stock/options
+    # gets the larger share because share/contract prices are lumpy (can't buy
+    # fractional units) and need real headroom; forex sizing (units_for_risk) is
+    # continuous down to fractional-unit stop distances, so it works fine on a
+    # smaller allocation. See project memory on the exposure-cap diagnosis this
+    # split came from.
+    stock_account_start_balance: float = 700.0
+    forex_account_start_balance: float = 300.0
 
     # Risk defaults
     confidence_threshold: int = 85

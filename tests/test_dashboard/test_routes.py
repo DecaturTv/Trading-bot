@@ -123,7 +123,7 @@ def test_get_forex_positions_empty_when_forex_not_configured():
 def test_get_forex_account_returns_paper_equity_override():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.forex_account_start_balance = 500.0
     context.forex_broker.get_account.return_value = make_account(equity=100000.0)
     with make_client(context) as client:
         response = client.get("/api/forex/account", headers=AUTH)

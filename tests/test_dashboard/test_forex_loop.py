@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_forex_position
@@ -202,6 +202,33 @@ async def test_entry_cycle_happy_path_opens_position():
     assert snapshot_call.args[4] == "bullish"
     persisted_position = context.forex_position_repository.upsert.call_args.args[0]
     assert persisted_position.feature_snapshot_id == 1
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_shrinks_size_on_positive_day_streak():
+    def make_ctx():
+        context = make_context()
+        context.forex_broker.get_candles.return_value = make_bars(n=40)
+        context.forex_decision_model.score.return_value = bullish_signal()
+        context.forex_broker.get_pricing.return_value = (1.0998, 1.1000)
+        context.forex_broker.submit_market_order.return_value = "trade-1"
+        context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+        return context
+
+    baseline_context = make_ctx()
+    await forex_entry_cycle(baseline_context, MARKET_OPEN_TUESDAY)
+    baseline_units = baseline_context.forex_broker.submit_market_order.call_args.args[1]
+
+    streak_context = make_ctx()
+    # 6-day streak floors the sizing multiplier at 0.4 (see risk/streak.py)
+    streak_context.trade_outcome_repository.daily_pnls.return_value = [
+        (date(2026, 8, d), 10.0) for d in range(5, 11)
+    ]
+    await forex_entry_cycle(streak_context, MARKET_OPEN_TUESDAY)
+    streak_units = streak_context.forex_broker.submit_market_order.call_args.args[1]
+
+    streak_context.trade_outcome_repository.daily_pnls.assert_awaited_once_with(asset_class="forex")
+    assert streak_units < baseline_units
 
 
 @pytest.mark.asyncio
@@ -516,7 +543,7 @@ async def test_loss_limit_check_scopes_halt_and_pnls_to_forex():
 async def test_loss_limit_check_skips_weekly_window_in_paper_mode():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.forex_account_start_balance = 500.0
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
 
@@ -559,7 +586,7 @@ async def test_loss_limit_check_sends_critical_alert_when_triggered():
 async def test_loss_limit_check_paper_mode_never_halts():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.forex_account_start_balance = 500.0
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]
 
@@ -573,7 +600,7 @@ async def test_loss_limit_check_paper_mode_never_halts():
 async def test_loss_limit_check_paper_mode_notifies_on_breach_without_halting():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.forex_account_start_balance = 500.0
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-1000.0]  # -200% of $500, breaches 5% daily limit
 
@@ -591,7 +618,7 @@ async def test_loss_limit_check_paper_mode_notifies_on_breach_without_halting():
 async def test_loss_limit_check_paper_mode_no_alert_within_limits():
     context = make_context()
     context.settings.trading_mode = "paper"
-    context.settings.account_start_balance = 500.0
+    context.settings.forex_account_start_balance = 500.0
     context.forex_broker.get_account.return_value = make_account(equity=10000.0)
     context.trade_outcome_repository.pnls_since.return_value = [-10.0]  # -2%, within the 5% limit
 
