@@ -25,18 +25,25 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://localhost:5432/trading_bot"
     redis_url: str = "redis://localhost:6379/0"
 
-    # Account — split from a single combined $1000 paper bankroll. Stock/options
-    # gets the larger share because share/contract prices are lumpy (can't buy
-    # fractional units) and need real headroom; forex sizing (units_for_risk) is
-    # continuous down to fractional-unit stop distances, so it works fine on a
-    # smaller allocation. See project memory on the exposure-cap diagnosis this
-    # split came from. Raised 700 -> 1100 on 2026-08-19: three positions
+    # Account — originally split from a single combined $1000 paper bankroll,
+    # stock/options getting the larger share because share/contract prices
+    # are lumpy (can't buy fractional units) and need real headroom; forex
+    # sizing (units_for_risk) is continuous down to fractional-unit stop
+    # distances, so it works fine on a smaller allocation. See project memory
+    # on the exposure-cap diagnosis this split came from.
+    #
+    # Raised well past that original $700 on 2026-08-19: three positions
     # opened while the pre-trade check sized against a single share's price
     # instead of qty x price (now fixed) had already committed ~$898 against
-    # the $700 figure -- 950 still left them at ~94% of a 90% cap, so this
-    # gives real headroom over what's actually deployed instead of rebasing
-    # right at the edge of it.
-    stock_account_start_balance: float = 1100.0
+    # it. Clearing the 90% exposure cap for those three alone only needed
+    # ~$1100, but the Kelly sizer's pre-30-trade fallback prices a *new*
+    # trade at 45% of equity -- for one of those to also fit on top of the
+    # $898 already stuck, equity needs to clear roughly
+    # 898 / (0.9 - 0.45) ≈ 1996, hence 2100. This is a real, deliberate
+    # increase to the simulated bankroll (not just a rounding bump) to keep
+    # new entries flowing immediately; it also means risk-per-trade is now a
+    # smaller percentage of a bigger simulated account than originally tuned.
+    stock_account_start_balance: float = 2100.0
     forex_account_start_balance: float = 300.0
 
     # Risk defaults
