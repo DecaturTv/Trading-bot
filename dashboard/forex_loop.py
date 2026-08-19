@@ -7,7 +7,7 @@ from broker.models import OrderSide
 from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
 from forex.conversion import quote_to_account_rate
-from forex.exposure import check_currency_concentration
+from forex.exposure import check_currency_concentration, check_currency_direction_conflict
 from forex.models import OpenForexPosition
 from forex.oanda_adapter import TradeNotSettledError
 from forex.sizing import units_for_risk
@@ -114,6 +114,18 @@ async def _maybe_enter_forex(
         )
         return
 
+    # check_currency_concentration (above, before bars were even fetched) is
+    # a cheap same-currency-occurrence cap; it can't see direction because
+    # side isn't known that early. Now that it is, reject a candidate that
+    # would net against an already-open opposite-direction position on a
+    # shared currency -- see forex.exposure.check_currency_direction_conflict.
+    side = OrderSide.BUY if signal.direction is TradeDirection.BULLISH else OrderSide.SELL
+    open_positions = await context.forex_position_repository.get_all()
+    direction_check = check_currency_direction_conflict(pair, side, open_positions)
+    if not direction_check.passed:
+        logger.info("forex entry cycle skipped %s: %s", pair, direction_check.reason)
+        return
+
     atr_values = atr(bars, _ATR_PERIOD)
     latest_atr = atr_values[-1]
     if latest_atr != latest_atr or latest_atr <= 0:  # NaN (warming up) or degenerate
@@ -126,7 +138,6 @@ async def _maybe_enter_forex(
 
     _, entry_price = await context.forex_broker.get_pricing(pair)  # ask; conservative for either direction
 
-    side = OrderSide.BUY if signal.direction is TradeDirection.BULLISH else OrderSide.SELL
     if side is OrderSide.BUY:
         stop_loss_price = entry_price - stop_distance
         take_profit_price = entry_price + stop_distance * context.settings.forex_take_profit_r_multiple

@@ -1,13 +1,13 @@
 from datetime import datetime, timezone
 
 from broker.models import OrderSide
-from forex.exposure import check_currency_concentration
+from forex.exposure import check_currency_concentration, check_currency_direction_conflict
 from forex.models import OpenForexPosition
 
 
-def make_position(pair):
+def make_position(pair, side=OrderSide.BUY):
     return OpenForexPosition(
-        pair=pair, side=OrderSide.BUY, units=1000, entry_price=1.0, stop_loss_price=0.99,
+        pair=pair, side=side, units=1000, entry_price=1.0, stop_loss_price=0.99,
         take_profit_price=1.02, oanda_trade_id="1", opened_at=datetime.now(timezone.utc),
     )
 
@@ -57,3 +57,43 @@ def test_cap_of_one_rejects_any_shared_currency():
     result = check_currency_concentration("GBP_USD", open_positions, max_positions_per_currency=1)
     assert result.passed is False
     assert "USD" in result.reason
+
+
+def test_direction_conflict_passes_when_no_open_positions():
+    result = check_currency_direction_conflict("EUR_ZAR", OrderSide.BUY, [])
+    assert result.passed is True
+
+
+def test_direction_conflict_rejects_opposite_bet_on_shared_base_currency():
+    """Regression test: buying AUD_NZD (long AUD) while AUD_JPY is already
+    open sell (short AUD) is two spreads paid to hold a position that mostly
+    cancels itself out -- this happened live, see project memory on the
+    forex strategy-contradiction diagnosis."""
+    open_positions = [make_position("AUD_JPY", side=OrderSide.SELL)]
+    result = check_currency_direction_conflict("AUD_NZD", OrderSide.BUY, open_positions)
+    assert result.passed is False
+    assert "AUD" in result.reason
+
+
+def test_direction_conflict_rejects_opposite_bet_on_shared_quote_currency():
+    # USD_CAD buy = long USD/short CAD. CAD_JPY buy = long CAD/short JPY.
+    # Both take opposite positions on CAD.
+    open_positions = [make_position("CAD_JPY", side=OrderSide.BUY)]
+    result = check_currency_direction_conflict("USD_CAD", OrderSide.BUY, open_positions)
+    assert result.passed is False
+    assert "CAD" in result.reason
+
+
+def test_direction_conflict_passes_when_same_direction_on_shared_currency():
+    # USD_CAD buy = short CAD. CAD_HKD sell = short base CAD too (long HKD)
+    # -- the same bet stacked twice (check_currency_concentration's job to
+    # cap), not a contradiction (this function's job).
+    open_positions = [make_position("USD_CAD", side=OrderSide.BUY)]
+    result = check_currency_direction_conflict("CAD_HKD", OrderSide.SELL, open_positions)
+    assert result.passed is True
+
+
+def test_direction_conflict_passes_when_no_shared_currency():
+    open_positions = [make_position("EUR_USD", side=OrderSide.BUY)]
+    result = check_currency_direction_conflict("GBP_JPY", OrderSide.SELL, open_positions)
+    assert result.passed is True

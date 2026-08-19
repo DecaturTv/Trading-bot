@@ -173,6 +173,42 @@ async def test_entry_cycle_opens_once_signal_confirmation_count_reached():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_skips_when_it_would_net_against_an_opposite_direction_position():
+    """Regression test: buying EUR_USD (long EUR) while EUR_GBP is already
+    open sell (short EUR) is two spreads paid to hold a position that mostly
+    cancels itself out -- see project memory on the forex strategy-
+    contradiction diagnosis (caught live: AUD_NZD buy open at the same time
+    as AUD_JPY sell)."""
+    context = make_context()
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.forex_decision_model.score.return_value = bullish_signal()  # EUR_USD, bullish -> BUY (long EUR)
+    context.forex_position_repository.get_all.return_value = [
+        make_forex_position(pair="EUR_GBP", side=OrderSide.SELL),  # short EUR
+    ]
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.submit_market_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_allows_same_direction_position_on_shared_currency():
+    context = make_context()
+    context.forex_broker.get_candles.return_value = make_bars(n=40)
+    context.forex_decision_model.score.return_value = bullish_signal()  # EUR_USD, bullish -> BUY (long EUR)
+    context.forex_position_repository.get_all.return_value = [
+        make_forex_position(pair="EUR_GBP", side=OrderSide.BUY),  # also long EUR -- not a conflict
+    ]
+    context.forex_broker.get_pricing.return_value = (1.0998, 1.1000)
+    context.forex_broker.submit_market_order.return_value = "trade-1"
+    context.forex_broker.get_account.return_value = make_account(equity=10000.0)
+
+    await forex_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.forex_broker.submit_market_order.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_happy_path_opens_position():
     context = make_context()
     context.forex_broker.get_candles.return_value = make_bars(n=40)

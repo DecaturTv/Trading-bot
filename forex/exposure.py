@@ -2,6 +2,8 @@ from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 
+from broker.models import OrderSide
+
 from .models import OpenForexPosition
 
 
@@ -14,6 +16,13 @@ class ExposureCheckResult:
 def _currencies(pair: str) -> tuple[str, str]:
     base, quote = pair.split("_")
     return base, quote
+
+
+def _long_short(pair: str, side: OrderSide) -> tuple[str, str]:
+    """Which currency a position is long vs short -- buying a pair means
+    long the base/short the quote, selling is the reverse."""
+    base, quote = _currencies(pair)
+    return (base, quote) if side is OrderSide.BUY else (quote, base)
 
 
 def check_currency_concentration(
@@ -46,6 +55,38 @@ def check_currency_concentration(
                 reason=(
                     f"{currency} already appears in {counts[currency]} open position(s), "
                     f"at/above cap {max_positions_per_currency}"
+                ),
+            )
+    return ExposureCheckResult(passed=True)
+
+
+def check_currency_direction_conflict(
+    pair: str, side: OrderSide, open_positions: Sequence[OpenForexPosition]
+) -> ExposureCheckResult:
+    """Rejects a candidate that would net against an already-open position on
+    a shared currency -- e.g. buying AUD_NZD (long AUD) while AUD_JPY is open
+    sell (short AUD) is two spreads paid to hold a position that mostly
+    cancels itself out, not two independent bets (this happened live: see
+    project memory on the forex strategy-contradiction diagnosis).
+
+    Unlike check_currency_concentration's same-direction stacking cap, this
+    applies regardless of count -- even a single existing opposite-direction
+    position on a shared currency is a contradiction, not diversification.
+    Needs the candidate's side, so it can only run once the signal's
+    direction is known (after check_currency_concentration's cheap early
+    pre-filter, not before).
+    """
+    candidate_long, candidate_short = _long_short(pair, side)
+
+    for position in open_positions:
+        pos_long, pos_short = _long_short(position.pair, position.side)
+        if candidate_long == pos_short or candidate_short == pos_long:
+            conflicting_currency = candidate_long if candidate_long == pos_short else candidate_short
+            return ExposureCheckResult(
+                passed=False,
+                reason=(
+                    f"{pair} ({side.value}) would net against already-open {position.pair} "
+                    f"({position.side.value}) -- both take opposite positions on {conflicting_currency}"
                 ),
             )
     return ExposureCheckResult(passed=True)
