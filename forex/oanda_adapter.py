@@ -31,7 +31,10 @@ class OandaError(Exception):
 
 class TradeNotSettledError(OandaError):
     """Trade closed on OANDA's side but its realized P&L isn't queryable yet —
-    OANDA's trade endpoint lags a closed trade's data by up to a few minutes."""
+    the direct trade lookup 404s and the transaction-ledger fallback (see
+    OandaAdapter._find_realized_pnl_from_transactions) hasn't found the
+    closing fill either. Should be rare/near-instant now that the ledger
+    fallback exists; kept as a last-resort retry-next-cycle signal."""
 
     def __init__(self, trade_id: str):
         super().__init__(f"trade {trade_id} not yet settled")
@@ -195,9 +198,37 @@ class OandaAdapter:
     async def get_trade_realized_pnl(self, trade_id: str) -> float:
         response = await self._client.get(f"/v3/accounts/{self._account_id}/trades/{trade_id}")
         if response.status_code == 404:
-            raise TradeNotSettledError(trade_id)
+            return await self._find_realized_pnl_from_transactions(trade_id)
         response.raise_for_status()
         return float(response.json()["trade"]["realizedPL"])
+
+    async def _find_realized_pnl_from_transactions(self, trade_id: str) -> float:
+        """Fallback for when /trades/{id} 404s on a trade this account's own
+        transaction ledger proves opened and closed -- confirmed against the
+        practice API directly (not documented behavior): a closed trade can
+        simply drop out of both the direct lookup and the /trades?state=CLOSED
+        list while the immutable transaction ledger still has it, so retrying
+        the same lookup forever (the original assumption behind
+        TradeNotSettledError) never resolves it.
+
+        The ORDER_FILL that closed the trade carries the same realizedPL the
+        /trades lookup would have, in its tradesClosed payload -- scan for it
+        instead. A trade's OANDA-assigned ID equals the transaction ID of the
+        fill that opened it, so that's a safe lower bound for the range scan.
+        """
+        summary = await self._client.get(f"/v3/accounts/{self._account_id}/summary")
+        summary.raise_for_status()
+        last_transaction_id = summary.json()["account"]["lastTransactionID"]
+        response = await self._client.get(
+            f"/v3/accounts/{self._account_id}/transactions/idrange",
+            params={"from": trade_id, "to": last_transaction_id, "type": "ORDER_FILL"},
+        )
+        response.raise_for_status()
+        for txn in response.json()["transactions"]:
+            for closed in txn.get("tradesClosed", []):
+                if closed["tradeID"] == trade_id:
+                    return float(closed["realizedPL"])
+        raise TradeNotSettledError(trade_id)
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def close_trade(self, trade_id: str) -> None:

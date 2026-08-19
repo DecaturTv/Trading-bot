@@ -290,9 +290,41 @@ async def test_get_trade_realized_pnl():
 
 
 @pytest.mark.asyncio
-async def test_get_trade_realized_pnl_raises_not_settled_on_404():
+async def test_get_trade_realized_pnl_falls_back_to_transaction_ledger_on_404():
+    """Regression test: OANDA's practice API can 404 a closed trade's direct
+    lookup even though the account's transaction ledger proves it opened and
+    closed (see project memory on the forex-reconciliation diagnosis) --
+    the ORDER_FILL that closed it still carries the real realizedPL."""
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(404, json={"errorMessage": "trade not found"})
+        if request.url.path.endswith("/trades/1"):
+            return httpx.Response(404, json={"errorMessage": "trade not found"})
+        if request.url.path.endswith("/summary"):
+            return httpx.Response(200, json={"account": {"lastTransactionID": "20"}})
+        if request.url.path.endswith("/transactions/idrange"):
+            assert request.url.params["from"] == "1"
+            assert request.url.params["to"] == "20"
+            return httpx.Response(200, json={"transactions": [
+                {"id": "5", "type": "ORDER_FILL", "tradesClosed": [{"tradeID": "1", "realizedPL": "-5.66"}]},
+            ]})
+        raise AssertionError(f"unexpected request: {request.url}")
+
+    adapter = make_adapter(handler)
+    pnl = await adapter.get_trade_realized_pnl("1")
+
+    assert pnl == -5.66
+    await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_trade_realized_pnl_raises_not_settled_when_absent_from_ledger_too():
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/trades/1"):
+            return httpx.Response(404, json={"errorMessage": "trade not found"})
+        if request.url.path.endswith("/summary"):
+            return httpx.Response(200, json={"account": {"lastTransactionID": "20"}})
+        if request.url.path.endswith("/transactions/idrange"):
+            return httpx.Response(200, json={"transactions": []})
+        raise AssertionError(f"unexpected request: {request.url}")
 
     adapter = make_adapter(handler)
 
