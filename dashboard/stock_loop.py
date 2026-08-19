@@ -127,13 +127,6 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
             return
 
         account = await get_effective_account(context)
-        positions = await context.broker.get_positions()
-        check = await context.pre_trade_checker.evaluate(account, positions, symbol, entry_price)
-        if not check.passed:
-            failed = [f"{c.name}: {c.reason}" for c in check.checks if not c.passed]
-            logger.info("stock entry cycle skipped %s: pre-trade check failed (%s)", symbol, "; ".join(failed))
-            return
-
         stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
         kelly_result = context.kelly_sizer.size(stats)
         daily_pnls = await context.trade_outcome_repository.daily_pnls(asset_class="equities")
@@ -148,6 +141,20 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
                 "stock entry cycle skipped %s: budget $%.2f can't afford one share at ask $%.2f",
                 symbol, budget, entry_price,
             )
+            return
+
+        # estimated_cost must be the full qty x entry_price about to be spent,
+        # not a single share's price -- checking against one share let trades
+        # pass that, once actually sized, committed far more capital than the
+        # cap intended (see project memory on the stock-entries-blocked-by-
+        # exposure diagnosis, which traced runaway exposure back to this same
+        # per-unit check).
+        positions = await context.broker.get_positions()
+        estimated_cost = qty * entry_price
+        check = await context.pre_trade_checker.evaluate(account, positions, symbol, estimated_cost)
+        if not check.passed:
+            failed = [f"{c.name}: {c.reason}" for c in check.checks if not c.passed]
+            logger.info("stock entry cycle skipped %s: pre-trade check failed (%s)", symbol, "; ".join(failed))
             return
 
         order = await context.broker.submit_order(

@@ -30,8 +30,13 @@ class Settings(BaseSettings):
     # fractional units) and need real headroom; forex sizing (units_for_risk) is
     # continuous down to fractional-unit stop distances, so it works fine on a
     # smaller allocation. See project memory on the exposure-cap diagnosis this
-    # split came from.
-    stock_account_start_balance: float = 700.0
+    # split came from. Raised 700 -> 950 on 2026-08-19: three positions opened
+    # while the pre-trade check sized against a single share's price instead
+    # of qty x price (now fixed) had already committed ~$897 against the
+    # $700 figure, permanently tripping the 90% exposure cap for any new
+    # stock entry. 950 gives headroom over what's actually deployed instead
+    # of rebasing below it.
+    stock_account_start_balance: float = 950.0
     forex_account_start_balance: float = 300.0
 
     # Risk defaults

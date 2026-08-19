@@ -192,14 +192,21 @@ async def close_context(context: AppContext) -> None:
 
 async def get_effective_account(context: AppContext) -> Account:
     """Wraps broker.get_account() — while paper trading, equity is treated as
-    settings.stock_account_start_balance rather than Alpaca's real
-    (unrealistically large) paper-account equity, so position sizing,
-    exposure/loss-limit checks, and the dashboard all reflect the bankroll
+    settings.stock_account_start_balance plus all-time realized P&L and
+    current unrealized P&L, rather than Alpaca's real (unrealistically large)
+    paper-account equity or a flat constant. A flat constant never moves as
+    positions gain/lose value, so it can't reflect what's actually been
+    committed to the market; marking it to market keeps position sizing,
+    exposure/loss-limit checks, and the dashboard honest about the bankroll
     actually being simulated. Live trading uses the broker's real equity
     unmodified."""
     account = await context.broker.get_account()
     if context.settings.trading_mode == "paper":
-        return replace(account, equity=context.settings.stock_account_start_balance)
+        realized_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="equities"))
+        positions = await context.broker.get_positions()
+        unrealized_pnl = sum(p.unrealized_pl for p in positions)
+        equity = context.settings.stock_account_start_balance + realized_pnl + unrealized_pnl
+        return replace(account, equity=equity)
     return account
 
 

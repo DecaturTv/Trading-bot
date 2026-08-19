@@ -204,13 +204,6 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
             return
 
         account = await get_effective_account(context)
-        positions = await context.broker.get_positions()
-        check = await context.pre_trade_checker.evaluate(account, positions, symbol, strategy.net_debit)
-        if not check.passed:
-            failed = [f"{c.name}: {c.reason}" for c in check.checks if not c.passed]
-            logger.info("entry cycle (%s) skipped %s: pre-trade check failed (%s)", timeframe, symbol, "; ".join(failed))
-            return
-
         stats = await get_live_trade_statistics(context.trade_outcome_repository, asset_class="equities")
         kelly_result = context.kelly_sizer.size(stats)
         daily_pnls = await context.trade_outcome_repository.daily_pnls(asset_class="equities")
@@ -225,6 +218,20 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
                 "entry cycle (%s) skipped %s: budget $%.2f can't afford one contract at net_debit $%.2f",
                 timeframe, symbol, budget, strategy.net_debit,
             )
+            return
+
+        # estimated_cost must be the full qty x net_debit that's about to be
+        # committed, not a single contract's price -- checking against one
+        # unit let buying-power/exposure pass trades that, once actually
+        # sized, committed far more capital than the cap intended (see
+        # project memory on the stock-entries-blocked-by-exposure diagnosis,
+        # which traced runaway exposure back to this same per-unit check).
+        positions = await context.broker.get_positions()
+        estimated_cost = qty * strategy.net_debit
+        check = await context.pre_trade_checker.evaluate(account, positions, symbol, estimated_cost)
+        if not check.passed:
+            failed = [f"{c.name}: {c.reason}" for c in check.checks if not c.passed]
+            logger.info("entry cycle (%s) skipped %s: pre-trade check failed (%s)", timeframe, symbol, "; ".join(failed))
             return
 
         result = await context.executor.execute(strategy, qty)

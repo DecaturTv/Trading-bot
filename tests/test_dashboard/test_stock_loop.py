@@ -187,6 +187,31 @@ async def test_entry_cycle_happy_path_opens_position():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_checks_exposure_against_full_qty_times_price():
+    """Regression test for the exposure/buying-power check being evaluated
+    against a single share's ask price instead of the full qty x price
+    about to be spent -- see project memory on the stock-entries-blocked-
+    by-exposure diagnosis."""
+    context = make_context()
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_latest_quote.return_value = make_quote(ask=100.0)
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.broker.get_account.return_value = make_account(equity=10000.0)
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+    context.broker.submit_order.return_value = make_order()
+
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    # budget = 10000 * 0.1 = 1000 // 100.0 ask -> qty 10 -> estimated_cost 1000.0, not 100.0
+    context.pre_trade_checker.evaluate.assert_awaited_once()
+    args = context.pre_trade_checker.evaluate.call_args.args
+    assert args[2] == "AAPL"
+    assert args[3] == 1000.0
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_shrinks_size_on_positive_day_streak():
     context = make_context()
     context.universe_manager.get_active_symbols.return_value = ["AAPL"]

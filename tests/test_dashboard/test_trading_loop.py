@@ -232,6 +232,31 @@ async def test_entry_cycle_happy_path_opens_position():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_checks_exposure_against_full_qty_times_net_debit():
+    """Regression test for the exposure/buying-power check being evaluated
+    against a single contract's net_debit instead of the full qty x net_debit
+    about to be spent -- see project memory on the stock-entries-blocked-by-
+    exposure diagnosis (the same bug existed on both the options and direct
+    stock entry paths)."""
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)])
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.5, position_fraction=0.5, used_fallback=True)
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    # equity=10000, position_fraction=0.5 -> budget=5000, net_debit=520 (ask 5.2 * 100) -> qty=9,
+    # so estimated_cost must be 9 * 520 = 4680.0, not the single-contract 520.0.
+    context.pre_trade_checker.evaluate.assert_awaited_once()
+    args = context.pre_trade_checker.evaluate.call_args.args
+    assert args[2] == "AAPL"
+    assert args[3] == 4680.0
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_shrinks_size_on_positive_day_streak():
     context = make_context()
     context.universe_manager.get_universe.return_value = ["AAPL"]
