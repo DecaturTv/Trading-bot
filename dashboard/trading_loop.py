@@ -132,7 +132,20 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         return
 
     right = OptionRight.CALL if signal.direction is TradeDirection.BULLISH else OptionRight.PUT
-    chain = await context.broker.get_option_chain(symbol)
+    # Bound the request to the window select_expiration() could actually use --
+    # anything outside +/- option_max_dte_deviation_days of the target would be
+    # rejected below anyway. Fetching unbounded-from-today instead relies on
+    # Alpaca's pagination to page past every near-term expiration first, and for
+    # high-strike-count/high-expiration-frequency underlyings (e.g. SPY's
+    # near-daily expirations, 100+ strikes each) that can exhaust the chain
+    # fetch's page budget before it ever reaches something near the target DTE.
+    # Confirmed live 2026-08-19: the far-dated expiration was real and tradable,
+    # the unbounded fetch just never got to it.
+    target_date = now.date() + timedelta(days=context.settings.option_target_dte)
+    deviation = timedelta(days=context.settings.option_max_dte_deviation_days)
+    chain = await context.broker.get_option_chain(
+        symbol, expiration_gte=target_date - deviation, expiration_lte=target_date + deviation
+    )
     expirations = sorted({c.expiration for c in chain if c.right is right})
     if not expirations:
         logger.info(

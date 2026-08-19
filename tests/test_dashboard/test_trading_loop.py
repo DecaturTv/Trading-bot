@@ -182,6 +182,34 @@ async def test_entry_cycle_skips_when_nearest_expiration_deviates_too_far_from_t
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_fetches_option_chain_bounded_to_target_dte_window():
+    """Regression test: fetching the chain unbounded-from-today relied on
+    Alpaca's pagination to page past every near-term expiration before
+    reaching one near the target DTE -- for high-strike-count/high-
+    expiration-frequency underlyings that exhausted the page budget first,
+    silently hiding real, tradable far-dated expirations (confirmed live
+    2026-08-19, see project memory). Requesting the +/- deviation window
+    directly lets the broker filter server-side instead."""
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.settings.option_target_dte = 25
+    context.settings.option_max_dte_deviation_days = 10
+    context.broker.get_option_chain.return_value = make_chain(
+        [(95, 0.65), (100, 0.50), (105, 0.35)], expiration=MARKET_OPEN_TUESDAY.date() + timedelta(days=25)
+    )
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.get_option_chain.assert_awaited_once_with(
+        "AAPL",
+        expiration_gte=MARKET_OPEN_TUESDAY.date() + timedelta(days=15),
+        expiration_lte=MARKET_OPEN_TUESDAY.date() + timedelta(days=35),
+    )
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_skips_when_pre_trade_check_fails():
     context = make_context()
     context.universe_manager.get_universe.return_value = ["AAPL"]
