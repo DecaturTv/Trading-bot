@@ -49,6 +49,7 @@ from datetime import datetime, timedelta, timezone
 from broker.models import Bar
 from data.bars_repository import BarsRepository
 from decision_engine.scoring import WeightedFactorModel
+from options.strategy_builders import MIN_TRADEABLE_CONTRACT_COST
 from risk.kelly import KellySizer
 from trade_management.models import TradeManagementConfig
 
@@ -92,8 +93,9 @@ _FOREX_PAIR_RE = r"^[A-Z]{3}_[A-Z]{3}$"
 # dollars. Below ~$1/contract ($0.01/share) the stub is just noise — no real
 # broker fills a sub-penny option, and the engine's qty = budget // entry_cost
 # turns it into a 1e6–1e14-contract phantom position. Trades entered cheaper
-# than this are dropped from the tournament entirely.
-_MIN_TRADEABLE_CONTRACT_COST = 1.0
+# than this are dropped from the tournament entirely. Same floor the live entry
+# loop enforces (dashboard/trading_loop.py) — kept as one shared constant.
+_MIN_TRADEABLE_CONTRACT_COST = MIN_TRADEABLE_CONTRACT_COST
 
 # A long debit option/spread loses at most the premium paid (-100%); its upside
 # is convex but a single trade returning thousands of percent is the synthetic

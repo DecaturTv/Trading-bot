@@ -4,6 +4,15 @@ from .models import OptionLeg, OptionStrategy, StrategyConstructionError, Strate
 
 _CONTRACT_MULTIPLIER = 100
 
+# Minimum net debit (in per-contract dollars, i.e. premium x _CONTRACT_MULTIPLIER)
+# a long option/spread must cost to be worth trading. Below ~$1/contract
+# ($0.01/share) an option is a deep-OTM lottery ticket: no real depth behind the
+# quote, so stops and scale-outs can't reliably fill, and `budget // net_debit`
+# sizing turns the tiny premium into a huge contract stack whose whole value can
+# evaporate in a day. Enforced both in the tournament backtest (tournament/runner.py)
+# and the live entry loop (dashboard/trading_loop.py).
+MIN_TRADEABLE_CONTRACT_COST = 1.0
+
 
 def _require_price(contract: OptionContract, field: str) -> float:
     value = getattr(contract, field)

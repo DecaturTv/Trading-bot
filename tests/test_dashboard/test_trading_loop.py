@@ -239,6 +239,31 @@ async def test_entry_cycle_skips_when_kelly_sizing_yields_zero_qty():
 
 
 @pytest.mark.asyncio
+async def test_entry_cycle_skips_sub_dollar_contract():
+    """A deep-OTM contract priced under $1/contract ($0.01/share ask) is
+    rejected before sizing — no depth behind the quote, and budget //
+    net_debit would size a huge lottery-ticket stack (the BITO -$520 day)."""
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+    penny_chain = make_chain([(100, 0.50)])
+    penny_chain[0] = OptionContract(
+        symbol=penny_chain[0].symbol, underlying_symbol="AAPL", strike=100.0, expiration=EXPIRY,
+        right=OptionRight.CALL, bid=0.005, ask=0.007, last_price=0.006, implied_volatility=0.3,
+        greeks=OptionGreeks(delta=0.05, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+    )
+    context.broker.get_option_chain.return_value = penny_chain
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.executor.execute.assert_not_awaited()
+    context.position_repository.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_entry_cycle_happy_path_opens_position():
     context = make_context()
     context.universe_manager.get_universe.return_value = ["AAPL"]

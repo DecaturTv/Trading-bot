@@ -10,7 +10,7 @@ from decision_engine.models import TradeDirection
 from ml.trade_outcomes import get_live_trade_statistics
 from options.models import OptionLeg, OptionStrategy
 from options.selection import select_expiration, select_strike_by_delta
-from options.strategy_builders import build_long_call, build_long_put
+from options.strategy_builders import MIN_TRADEABLE_CONTRACT_COST, build_long_call, build_long_put
 from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
@@ -201,6 +201,19 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         strategy = build_long_call(contract) if right is OptionRight.CALL else build_long_put(contract)
     except Exception:
         logger.exception("failed to build strategy for %s", symbol)
+        return
+
+    # Reject sub-$1/contract options before we ever size or fill one. The
+    # synthetic-pricing blow-up this guards against in the tournament
+    # (tournament/runner.py) has a live twin: a deep-OTM contract with a
+    # near-zero premium has no depth behind its quote, so stops/scale-outs
+    # can't fill, and `budget // net_debit` sizes a huge lottery-ticket
+    # stack that loses its whole value in a day (see the BITO -$520 day).
+    if strategy.net_debit < MIN_TRADEABLE_CONTRACT_COST:
+        logger.info(
+            "entry cycle (%s) skipped %s: contract net_debit $%.2f below tradeable floor $%.2f",
+            timeframe, symbol, strategy.net_debit, MIN_TRADEABLE_CONTRACT_COST,
+        )
         return
 
     # Everything above this point is read-only (bars, signal, chain, strike)
