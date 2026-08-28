@@ -1,3 +1,5 @@
+from datetime import timedelta
+
 from config.settings import Settings
 
 from .discord_notifier import DiscordNotifier
@@ -64,4 +66,4 @@ def build_alert_manager(
             )
         )
 
-    return AlertManager(routes)
+    return AlertManager(routes, resend_interval=timedelta(seconds=settings.alert_repeat_suppress_seconds))

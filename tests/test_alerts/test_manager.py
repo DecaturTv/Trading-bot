@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 import pytest
@@ -8,8 +8,14 @@ from alerts.manager import AlertManager, ChannelRoute
 from alerts.models import Alert, Severity
 
 
-def make_alert(severity=Severity.WARNING):
-    return Alert(title="t", message="m", severity=severity, timestamp=datetime.now(timezone.utc))
+def make_alert(severity=Severity.WARNING, *, timestamp=None, dedup_key=None):
+    return Alert(
+        title="t",
+        message="m",
+        severity=severity,
+        timestamp=timestamp or datetime.now(timezone.utc),
+        dedup_key=dedup_key,
+    )
 
 
 def make_notifier():
@@ -58,3 +64,33 @@ async def test_one_channel_failure_does_not_block_others():
 async def test_no_channels_configured_is_a_noop():
     manager = AlertManager([])
     await manager.send(make_alert())  # must not raise
+
+
+@pytest.mark.asyncio
+async def test_keyed_repeats_are_throttled_within_the_resend_window():
+    channel = make_notifier()
+    manager = AlertManager([ChannelRoute(channel, Severity.INFO)], resend_interval=timedelta(hours=6))
+    t0 = datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc)
+
+    await manager.send(make_alert(timestamp=t0, dedup_key="loss-limit"))
+    await manager.send(make_alert(timestamp=t0 + timedelta(minutes=2), dedup_key="loss-limit"))
+    await manager.send(make_alert(timestamp=t0 + timedelta(hours=5, minutes=59), dedup_key="loss-limit"))
+
+    channel.send.assert_awaited_once()
+
+    # Past the window, and again for a different key, both go through.
+    await manager.send(make_alert(timestamp=t0 + timedelta(hours=7), dedup_key="loss-limit"))
+    await manager.send(make_alert(timestamp=t0 + timedelta(minutes=1), dedup_key="other"))
+    assert channel.send.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_alerts_without_a_dedup_key_are_never_throttled():
+    channel = make_notifier()
+    manager = AlertManager([ChannelRoute(channel, Severity.INFO)])
+    t0 = datetime(2026, 8, 28, 14, 0, tzinfo=timezone.utc)
+
+    await manager.send(make_alert(timestamp=t0))
+    await manager.send(make_alert(timestamp=t0))
+
+    assert channel.send.await_count == 2

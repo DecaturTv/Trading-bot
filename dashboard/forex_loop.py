@@ -307,6 +307,10 @@ async def forex_loss_limit_check_cycle(context: AppContext, now: datetime) -> No
                     message=f"{breach_reason}; daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
                     severity=Severity.WARNING,
                     timestamp=now,
+                    # Re-checked every forex_position_check_interval and paper
+                    # mode never halts, so without dedup this re-alerts every
+                    # ~2 min for the rest of the day.
+                    dedup_key="loss-limit-breach-forex-paper",
                 )
             )
 

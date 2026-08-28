@@ -90,6 +90,12 @@ class Settings(BaseSettings):
     alert_email_from: str | None = None
     alert_email_to: str | None = None
 
+    # An alert carrying a dedup_key is sent at most once per this many seconds
+    # (see AlertManager). Guards against cycles that re-raise the same alert
+    # every position-check interval while a condition stays true — chiefly
+    # paper-mode loss-limit breaches, which notify but never halt. Default 6h.
+    alert_repeat_suppress_seconds: int = 21600
+
     # ML tracking (local file-based SQLite store — no tracking server needed)
     mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
 

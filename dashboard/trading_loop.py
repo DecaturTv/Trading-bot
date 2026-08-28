@@ -462,6 +462,10 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
                     message=f"{breach_reason}; daily_pnl_pct={daily_pnl_pct:.2%} weekly_pnl_pct={weekly_pnl_pct:.2%}",
                     severity=Severity.WARNING,
                     timestamp=now,
+                    # This cycle re-checks every position_check_interval and
+                    # paper mode never halts, so without dedup the breach
+                    # re-alerts every ~2 min for the rest of the day.
+                    dedup_key="loss-limit-breach-equities-paper",
                 )
             )
 
