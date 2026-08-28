@@ -23,6 +23,7 @@ Usage:
 import argparse
 import asyncio
 import logging
+import re
 import sys
 from datetime import datetime, time, timedelta, timezone
 
@@ -38,6 +39,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 logger = logging.getLogger(__name__)
 
 _TIMEFRAME_TO_STOCK_DAILY = "1Day"
+_OCC_RE = re.compile(r"[A-Z]{1,5}\d{6}[CP]\d{8}")
 
 
 def _dte_trading_to_calendar(days: int) -> int:
@@ -90,7 +92,13 @@ async def ingest_underlying(
     exp_lo = (start + timedelta(days=_dte_trading_to_calendar(dte_min))).date()
     exp_hi = (end + timedelta(days=_dte_trading_to_calendar(dte_max))).date()
     contracts = await adapter.get_historical_option_contracts(underlying, exp_lo, exp_hi)
-    in_band = [c for c in contracts if price_lo <= c.strike <= price_hi]
+    # Alpaca's contract list can include corporate-action-adjusted symbols
+    # (e.g. "1SOFI260918C00022500") that its own bars endpoint then 400s on,
+    # failing the whole batch — keep only standard OCC symbols.
+    in_band = [
+        c for c in contracts
+        if price_lo <= c.strike <= price_hi and _OCC_RE.fullmatch(c.symbol)
+    ]
     if not in_band:
         logger.warning("%s: 0/%d contracts in strike band [%.2f, %.2f]", underlying, len(contracts), price_lo, price_hi)
         return {"contracts": 0, "bars": 0, "contracts_with_bars": 0}
