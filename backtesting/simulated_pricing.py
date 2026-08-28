@@ -12,6 +12,20 @@ class SimulatedLeg:
     expiration: date
     right: OptionRight
     side: OrderSide
+    # OCC symbol of the real contract this leg maps to, when the leg was
+    # chosen by HistoricalOptionQuoteSource. None for BS-simulated legs, which
+    # are priced from strike/expiration alone.
+    occ_symbol: str | None = None
+
+
+def strike_increment(price: float) -> float:
+    """Typical listed strike spacing at a given underlying price — used to
+    build the synthetic strike grid."""
+    if price < 25:
+        return 0.5
+    if price < 200:
+        return 1.0
+    return 5.0
 
 
 def simulated_strategy_value(

@@ -9,6 +9,7 @@ from alpaca.data.enums import DataFeed
 from alpaca.data.historical.stock import StockHistoricalDataClient
 from alpaca.data.requests import (
     MostActivesRequest,
+    OptionBarsRequest,
     OptionChainRequest,
     StockBarsRequest,
     StockLatestQuoteRequest,
@@ -346,16 +347,23 @@ class AlpacaAdapter(BrokerAdapter):
         return [_map_option_contract(c, snapshots.get(c.symbol)) for c in contracts]
 
     async def _fetch_option_contracts(
-        self, underlying_symbol: str, expiration_gte: date | None, expiration_lte: date | None
+        self,
+        underlying_symbol: str,
+        expiration_gte: date | None,
+        expiration_lte: date | None,
+        status: AssetStatus = AssetStatus.ACTIVE,
+        limit: int | None = None,
+        page_cap: int = 20,
     ):
         contracts = []
         page_token = None
-        for _ in range(20):  # safety cap: a single underlying's chain fits well within this
+        for _ in range(page_cap):  # safety cap: a single underlying's chain fits well within this
             request = GetOptionContractsRequest(
                 underlying_symbols=[underlying_symbol],
-                status=AssetStatus.ACTIVE,
+                status=status,
                 expiration_date_gte=expiration_gte,
                 expiration_date_lte=expiration_lte,
+                limit=limit,
                 page_token=page_token,
             )
             response = await self._call(self._trading_client.get_option_contracts, request)
@@ -364,6 +372,45 @@ class AlpacaAdapter(BrokerAdapter):
             if not page_token:
                 break
         return contracts
+
+    @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
+    async def get_historical_option_contracts(
+        self, underlying_symbol: str, expiration_gte: date, expiration_lte: date
+    ) -> list[OptionContract]:
+        """Contract reference data (strike/expiration/type) for an underlying
+        over an expiration window, including EXPIRED contracts — Alpaca keeps
+        inactive contracts queryable, which is what a historical backtest
+        needs. No pricing/greeks (that's live-only snapshot data); the
+        backtest marks against option_bars instead."""
+        raw = []
+        for status in (AssetStatus.ACTIVE, AssetStatus.INACTIVE):
+            raw.extend(
+                await self._fetch_option_contracts(
+                    underlying_symbol, expiration_gte, expiration_lte, status=status, limit=10000, page_cap=50
+                )
+            )
+        by_symbol = {c.symbol: c for c in raw}  # ACTIVE + INACTIVE can overlap at the boundary
+        return [_map_option_contract(c, None) for c in by_symbol.values()]
+
+    @retry(max_attempts=3, base_delay=0.5, exceptions=(BrokerError,))
+    async def get_option_bars(
+        self, occ_symbols: list[str], timeframe: str, start: datetime, end: datetime, batch_size: int = 100
+    ) -> list[Bar]:
+        """Historical OHLCV for a list of option contracts (OCC symbols).
+        Batched — Alpaca accepts multi-symbol bar requests but caps how many
+        per call. Contracts with no trades in the window simply produce no
+        bars (BarSet omits the key), same as get_bars for equities."""
+        tf = _parse_timeframe(timeframe)
+        out: list[Bar] = []
+        for i in range(0, len(occ_symbols), batch_size):
+            chunk = occ_symbols[i : i + batch_size]
+            request = OptionBarsRequest(symbol_or_symbols=chunk, timeframe=tf, start=start, end=end)
+            raw = await self._call(self._option_data_client.get_option_bars, request)
+            data = getattr(raw, "data", raw)
+            for occ in chunk:
+                for b in data.get(occ, []):
+                    out.append(_map_bar(occ, b))
+        return out
 
     async def submit_order(self, order: OrderRequest) -> Order:
         # Not retried: resubmitting a failed order risks a duplicate fill.

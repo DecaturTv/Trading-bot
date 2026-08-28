@@ -3,11 +3,19 @@ from .forex_engine import ForexBacktestEngine
 from .forex_models import ForexBacktestConfig, ForexBacktestResult, SimulatedForexTrade
 from .models import BacktestConfig, BacktestResult, SimulatedTrade
 from .monte_carlo import MonteCarloResult, run_monte_carlo
+from .option_quote_source import (
+    HistoricalOptionQuoteSource,
+    MarkResult,
+    OptionQuoteSource,
+    SimulatedOptionQuoteSource,
+    build_historical_quote_source,
+)
 from .simulated_pricing import (
     SimulatedLeg,
     build_synthetic_chain,
     select_synthetic_strike_by_delta,
     simulated_strategy_value,
+    strike_increment,
 )
 from .statistics import compute_forex_trade_statistics, compute_trade_statistics
 from .volatility_estimator import realized_volatility
@@ -28,6 +36,12 @@ __all__ = [
     "build_synthetic_chain",
     "select_synthetic_strike_by_delta",
     "simulated_strategy_value",
+    "strike_increment",
+    "OptionQuoteSource",
+    "SimulatedOptionQuoteSource",
+    "HistoricalOptionQuoteSource",
+    "MarkResult",
+    "build_historical_quote_source",
     "compute_trade_statistics",
     "compute_forex_trade_statistics",
     "realized_volatility",

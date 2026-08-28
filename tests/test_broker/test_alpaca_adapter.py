@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -478,3 +478,58 @@ async def test_list_orders_filters_to_exact_status():
     orders = await adapter.list_orders(status=OrderStatus.FILLED)
 
     assert [o.order_id for o in orders] == ["o1"]
+
+
+@pytest.mark.asyncio
+async def test_get_historical_option_contracts_merges_active_and_inactive():
+    from datetime import date
+
+    from alpaca.trading.enums import ContractType
+
+    trading_client = MagicMock()
+    adapter = AlpacaAdapter(
+        trading_client=trading_client, data_client=MagicMock(),
+        screener_client=MagicMock(), option_data_client=MagicMock(),
+    )
+    exp = date(2026, 7, 17)
+    trading_client.get_option_contracts.side_effect = [
+        SimpleNamespace(  # ACTIVE
+            option_contracts=[make_alpaca_contract("AAPL260717C00200000", 200.0, exp, ContractType.CALL)],
+            next_page_token=None,
+        ),
+        SimpleNamespace(  # INACTIVE — one new, one dupe of the active call
+            option_contracts=[
+                make_alpaca_contract("AAPL260717P00190000", 190.0, exp, ContractType.PUT),
+                make_alpaca_contract("AAPL260717C00200000", 200.0, exp, ContractType.CALL),
+            ],
+            next_page_token=None,
+        ),
+    ]
+
+    contracts = await adapter.get_historical_option_contracts("AAPL", date(2026, 7, 1), date(2026, 7, 31))
+
+    assert {c.symbol for c in contracts} == {"AAPL260717C00200000", "AAPL260717P00190000"}
+    assert all(c.greeks is None and c.bid is None for c in contracts)
+    assert trading_client.get_option_contracts.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_option_bars_batches_and_maps():
+    option_data_client = MagicMock()
+    adapter = AlpacaAdapter(
+        trading_client=MagicMock(), data_client=MagicMock(),
+        screener_client=MagicMock(), option_data_client=option_data_client,
+    )
+    now = datetime(2026, 7, 6, 15, 45, tzinfo=timezone.utc)
+    option_data_client.get_option_bars.return_value = SimpleNamespace(
+        data={
+            "O1": [SimpleNamespace(timestamp=now, open=1.0, high=1.2, low=0.9, close=1.1, volume=50)],
+            "O2": [SimpleNamespace(timestamp=now, open=2.0, high=2.2, low=1.9, close=2.1, volume=30)],
+        }
+    )
+
+    bars = await adapter.get_option_bars(["O1", "O2", "O3"], "15Min", now - timedelta(days=1), now, batch_size=2)
+
+    assert option_data_client.get_option_bars.call_count == 2  # ["O1","O2"], ["O3"]
+    assert {b.symbol for b in bars} == {"O1", "O2"}
+    assert next(b for b in bars if b.symbol == "O1").close == 1.1

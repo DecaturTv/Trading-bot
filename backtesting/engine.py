@@ -2,7 +2,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 
-from broker.models import Bar, OptionRight, OrderSide
+from broker.models import Bar, OptionRight
 from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
 from decision_engine.scoring import WeightedFactorModel
@@ -15,12 +15,8 @@ from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, PositionState, TradeManagementConfig
 
 from .models import BacktestConfig, BacktestResult, SimulatedTrade
-from .simulated_pricing import (
-    SimulatedLeg,
-    build_synthetic_chain,
-    select_synthetic_strike_by_delta,
-    simulated_strategy_value,
-)
+from .option_quote_source import OptionQuoteSource, SimulatedOptionQuoteSource
+from .simulated_pricing import SimulatedLeg
 from .statistics import compute_trade_statistics
 from .volatility_estimator import realized_volatility
 
@@ -43,21 +39,17 @@ def _target_dte_to_expiration(as_of: date, target_dte_trading_days: int) -> date
     return as_of + timedelta(days=calendar_days)
 
 
-def _strike_increment(price: float) -> float:
-    if price < 25:
-        return 0.5
-    if price < 200:
-        return 1.0
-    return 5.0
-
-
 class BacktestEngine:
     """Replays historical bars through the same scanner/decision_engine/
     trade_management logic used live — not a reimplementation of the
     strategy, the actual pure functions — so backtest and live behavior
-    can't silently diverge. Options pricing is Black-Scholes-simulated
-    (see simulated_pricing.py); this project has no historical options
-    market data to replay instead.
+    can't silently diverge.
+
+    Option pricing comes from the injected `quote_source`
+    (`backtesting.option_quote_source`): the default `SimulatedOptionQuoteSource`
+    is the Black-Scholes stub; `HistoricalOptionQuoteSource` marks against real
+    historical option bars and returns None when a contract has no bar near a
+    timestamp, in which case the engine skips the entry or holds the position.
 
     Single symbol, single open position at a time (no pyramiding) — a
     multi-symbol portfolio backtest sharing one capital pool is a natural
@@ -70,20 +62,24 @@ class BacktestEngine:
         kelly_sizer: KellySizer,
         trade_management_config: TradeManagementConfig,
         config: BacktestConfig,
+        quote_source: OptionQuoteSource | None = None,
     ):
         self._decision_model = decision_model
         self._kelly_sizer = kelly_sizer
         self._tm_config = trade_management_config
         self._config = config
+        self._quotes = quote_source or SimulatedOptionQuoteSource(config.risk_free_rate)
 
     def run(self, symbol: str, bars: Sequence[Bar]) -> BacktestResult:
         equity = self._config.starting_equity
         equity_curve: list[float] = []
         trades: list[SimulatedTrade] = []
         open_position: _OpenPosition | None = None
+        last_bar_seen: Bar | None = None
         last_vol: float | None = None
         confirmation_direction: TradeDirection | None = None
         confirmation_streak = 0
+        entries_skipped_no_quote = 0
 
         for i in range(self._config.warmup_bars, len(bars)):
             window = bars[: i + 1]
@@ -93,6 +89,7 @@ class BacktestEngine:
             if vol is None:
                 continue
             last_vol = vol
+            last_bar_seen = current_bar
 
             if open_position is not None:
                 equity, open_position = self._process_open_position(
@@ -102,14 +99,13 @@ class BacktestEngine:
                     equity_curve.append(equity)
                 continue
 
-            open_position, confirmation_direction, confirmation_streak = self._maybe_enter(
+            open_position, confirmation_direction, confirmation_streak, skipped = self._maybe_enter(
                 symbol, window, current_bar, as_of, vol, equity, trades, confirmation_direction, confirmation_streak
             )
+            entries_skipped_no_quote += skipped
 
-        if open_position is not None and last_vol is not None:
-            equity = self._force_close(
-                symbol, open_position, bars[-1], bars[-1].timestamp.date(), last_vol, equity, trades
-            )
+        if open_position is not None and last_bar_seen is not None and last_vol is not None:
+            equity = self._force_close(symbol, open_position, last_bar_seen, last_vol, equity, trades)
             equity_curve.append(equity)
 
         return BacktestResult(
@@ -118,12 +114,17 @@ class BacktestEngine:
             equity_curve=equity_curve,
             starting_equity=self._config.starting_equity,
             ending_equity=equity,
+            entries_skipped_no_quote=entries_skipped_no_quote,
         )
 
     def _process_open_position(self, symbol, open_position, current_bar, as_of, vol, equity, trades):
-        current_value = simulated_strategy_value(
-            open_position.legs, current_bar.close, as_of, vol, self._config.risk_free_rate
-        )
+        mark = self._quotes.mark(open_position.legs, current_bar.close, current_bar.timestamp, vol)
+        if mark is None:
+            # No real quote near this bar — can't evaluate an exit; hold and
+            # try again next bar (same effect as ExitAction.NONE).
+            return equity, open_position
+        current_value = mark.value_per_unit
+
         dte = trading_days_until(open_position.expiration, as_of)
         days_held = trading_days_until(as_of, open_position.entry_date)
         decision = evaluate_exit(
@@ -149,6 +150,7 @@ class BacktestEngine:
                 qty=closed_qty,
                 exit_reason=decision.action.value,
                 pnl=pnl,
+                priced_from=mark.source,
             )
         )
         equity += pnl
@@ -168,7 +170,7 @@ class BacktestEngine:
         scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, window)) is not None]
         signal = self._decision_model.score(symbol, window, scan_hits, self._config.confidence_threshold)
         if not signal.meets_threshold or signal.direction is TradeDirection.NEUTRAL:
-            return None, None, 0
+            return None, None, 0, 0
 
         # Require the signal to hold for signal_confirmation_count consecutive
         # bars before acting on it, same as the live entry loops (see
@@ -177,42 +179,56 @@ class BacktestEngine:
         # never have entered, silently diverging backtest from live behavior.
         streak = update_streak(signal.direction, confirmation_direction, confirmation_streak)
         if not is_confirmed(streak, self._config.signal_confirmation_count):
-            return None, signal.direction, streak
+            return None, signal.direction, streak, 0
 
         right = OptionRight.CALL if signal.direction is TradeDirection.BULLISH else OptionRight.PUT
-        expiration = _target_dte_to_expiration(as_of, self._config.target_dte)
-        chain = build_synthetic_chain(
-            current_bar.close, expiration, as_of, vol, right, strike_increment=_strike_increment(current_bar.close)
+        target_expiration = _target_dte_to_expiration(as_of, self._config.target_dte)
+        leg = self._quotes.select_leg(
+            underlying=symbol,
+            as_of=current_bar.timestamp,
+            target_expiration=target_expiration,
+            right=right,
+            target_delta=self._config.target_delta,
+            underlying_price=current_bar.close,
+            volatility=vol,
         )
-        target_delta = self._config.target_delta if right is OptionRight.CALL else -self._config.target_delta
-        strike = select_synthetic_strike_by_delta(chain, target_delta)
-        leg = SimulatedLeg(strike=strike, expiration=expiration, right=right, side=OrderSide.BUY)
+        if leg is None:
+            return None, signal.direction, streak, 1
 
-        entry_cost = simulated_strategy_value([leg], current_bar.close, as_of, vol, self._config.risk_free_rate)
-        if entry_cost <= 0:
-            return None, signal.direction, streak
+        entry_mark = self._quotes.mark([leg], current_bar.close, current_bar.timestamp, vol)
+        if entry_mark is None or entry_mark.value_per_unit <= 0:
+            return None, signal.direction, streak, 1
+        entry_cost = entry_mark.value_per_unit
 
         stats = compute_trade_statistics(trades)
         kelly_result = self._kelly_sizer.size(stats)
         budget = position_budget_dollars(equity, kelly_result)
         qty = contracts_for_budget(budget, entry_cost)
         if qty <= 0:
-            return None, signal.direction, streak
+            return None, signal.direction, streak, 0
 
         position = _OpenPosition(
             legs=[leg],
-            expiration=expiration,
+            expiration=leg.expiration,
             strategy_type=StrategyType.LONG_CALL if right is OptionRight.CALL else StrategyType.LONG_PUT,
             direction=signal.direction,
             entry_date=as_of,
             state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=entry_cost, scaled_out=False, peak_gain_pct=0.0),
         )
-        return position, None, 0
+        return position, None, 0, 0
 
-    def _force_close(self, symbol, open_position, last_bar, as_of, vol, equity, trades):
-        current_value = simulated_strategy_value(
-            open_position.legs, last_bar.close, as_of, vol, self._config.risk_free_rate
-        )
+    def _force_close(self, symbol, open_position, last_bar, vol, equity, trades):
+        mark = self._quotes.mark(open_position.legs, last_bar.close, last_bar.timestamp, vol)
+        if mark is None:
+            mark = self._quotes.last_mark(open_position.legs, last_bar.close, last_bar.timestamp, vol)
+        if mark is None:
+            # Legs were never priceable at all — close flat rather than invent a value.
+            current_value = open_position.state.entry_cost_per_unit
+            source = "ffill"
+        else:
+            current_value = mark.value_per_unit
+            source = mark.source
+
         pnl = (current_value - open_position.state.entry_cost_per_unit) * open_position.state.qty
         trades.append(
             SimulatedTrade(
@@ -220,12 +236,13 @@ class BacktestEngine:
                 strategy_type=open_position.strategy_type,
                 direction=open_position.direction,
                 entry_date=open_position.entry_date,
-                exit_date=as_of,
+                exit_date=last_bar.timestamp.date(),
                 entry_cost_per_unit=open_position.state.entry_cost_per_unit,
                 exit_value_per_unit=current_value,
                 qty=open_position.state.qty,
                 exit_reason="end_of_data",
                 pnl=pnl,
+                priced_from=source,
             )
         )
         return equity + pnl

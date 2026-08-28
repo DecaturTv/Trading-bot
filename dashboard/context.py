@@ -17,6 +17,7 @@ from congress.source import HouseStockWatcherSource
 from data.bars_repository import BarsRepository
 from data.database import Database
 from data.ingestion import BarIngestionService
+from data.option_history_schema import apply_option_history_schema
 from data.schema import apply_schema
 from decision_engine.scoring import FOREX_WEIGHTS, WeightedFactorModel
 from decision_engine.signal_confirmation_repository import SignalConfirmationRepository
@@ -92,6 +93,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     pool = db.pool
 
     await apply_schema(pool)
+    await apply_option_history_schema(pool)
     await apply_universe_schema(pool)
     await apply_optionable_schema(pool)
     await apply_halt_schema(pool)

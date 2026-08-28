@@ -17,6 +17,9 @@ class SimulatedTrade:
     qty: int
     exit_reason: str  # an ExitAction value, or "end_of_data" for a forced mark-to-market close
     pnl: float
+    # How the exit was priced: "historical" / "ffill" (real option bars, see
+    # backtesting.option_quote_source) or "simulated" (Black-Scholes stub).
+    priced_from: str = "simulated"
 
 
 @dataclass(frozen=True)
@@ -55,3 +58,6 @@ class BacktestResult:
     equity_curve: list[float] = field(default_factory=list)
     starting_equity: float = 0.0
     ending_equity: float = 0.0
+    # Entries the signal wanted but the quote source couldn't price (no real
+    # option bar near the timestamp). Non-zero only for HistoricalOptionQuoteSource.
+    entries_skipped_no_quote: int = 0

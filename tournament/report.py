@@ -54,6 +54,15 @@ def render_leaderboard(board: Leaderboard) -> str:
     lines += [fmt(row) for row in rows]
     if board.winner:
         lines += ["", f"WINNER: {board.winner.name}  (+${board.winner.total_pnl:,.2f}, {board.winner.return_pct:+.1%})"]
+
+    if any(r.priced_historical or r.priced_ffill or r.entries_skipped_no_quote for r in board.results):
+        lines += ["", "Real-quote coverage (exits priced from real option bars vs forward-filled; entries skipped for no quote):"]
+        for r in board.results:
+            priced = r.priced_historical + r.priced_ffill
+            lines.append(
+                f"  {r.name:<16} {priced} priced ({r.real_quote_pct:.0%} real, {r.priced_ffill} ffill), "
+                f"{r.entries_skipped_no_quote} skipped, {r.symbols_without_option_data} symbols had no option data"
+            )
     return "\n".join(lines)
 
 
@@ -81,6 +90,10 @@ def _board_dict(board: Leaderboard) -> dict:
                 "max_drawdown_pct": round(r.max_drawdown_pct, 4),
                 "symbols_traded": r.symbols_traded,
                 "ending_bankroll": round(r.ending_bankroll, 2),
+                "priced_historical": r.priced_historical,
+                "priced_ffill": r.priced_ffill,
+                "entries_skipped_no_quote": r.entries_skipped_no_quote,
+                "symbols_without_option_data": r.symbols_without_option_data,
             }
             for i, r in enumerate(board.results, start=1)
         ],

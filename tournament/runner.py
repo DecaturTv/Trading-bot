@@ -48,6 +48,7 @@ from datetime import datetime, timedelta, timezone
 
 from broker.models import Bar
 from data.bars_repository import BarsRepository
+from data.option_bars_repository import OptionBarsRepository
 from decision_engine.scoring import WeightedFactorModel
 from options.strategy_builders import MIN_TRADEABLE_CONTRACT_COST
 from risk.kelly import KellySizer
@@ -57,6 +58,7 @@ from backtesting.engine import BacktestEngine
 from backtesting.forex_engine import ForexBacktestEngine
 from backtesting.forex_models import ForexBacktestConfig
 from backtesting.models import BacktestConfig
+from backtesting.option_quote_source import FFILL, HISTORICAL, build_historical_quote_source
 
 from .strategies import STRATEGIES, Strategy
 
@@ -138,11 +140,21 @@ class StrategyResult:
     max_drawdown_pct: float  # in [0, 1], peak-to-trough on the pooled equity path
     symbols_traded: int
     ending_bankroll: float  # starting bankroll + total_pnl
+    # Real-quote coverage (0 unless run against HistoricalOptionQuoteSource):
+    priced_historical: int = 0  # exits priced from a real option bar at the timestamp
+    priced_ffill: int = 0  # exits priced from a forward-filled real bar
+    entries_skipped_no_quote: int = 0  # signals dropped because no real option bar was near
+    symbols_without_option_data: int = 0
 
     @property
     def return_pct(self) -> float:
         start = self.ending_bankroll - self.total_pnl
         return self.total_pnl / start if start else 0.0
+
+    @property
+    def real_quote_pct(self) -> float:
+        priced = self.priced_historical + self.priced_ffill
+        return self.priced_historical / priced if priced else 0.0
 
 
 @dataclass(frozen=True)
@@ -172,12 +184,19 @@ def _pooled_drawdown(pnls_in_time_order: Sequence[float], bankroll: float) -> fl
     return max_dd
 
 
-def _summarize(name: str, trades_with_time: list[tuple[datetime, float]], symbols_traded: int, bankroll: float) -> StrategyResult:
+def _summarize(
+    name: str,
+    trades_with_time: list[tuple[datetime, float]],
+    symbols_traded: int,
+    bankroll: float,
+    coverage: dict[str, int] | None = None,
+) -> StrategyResult:
     pnls = [pnl for _, pnl in trades_with_time]
     wins = [p for p in pnls if p > 0]
     losses = [p for p in pnls if p <= 0]
     total = sum(pnls)
     ordered = [pnl for _, pnl in sorted(trades_with_time, key=lambda x: x[0])]
+    cov = coverage or {}
     return StrategyResult(
         name=name,
         total_pnl=total,
@@ -190,15 +209,17 @@ def _summarize(name: str, trades_with_time: list[tuple[datetime, float]], symbol
         max_drawdown_pct=_pooled_drawdown(ordered, bankroll),
         symbols_traded=symbols_traded,
         ending_bankroll=bankroll + total,
+        priced_historical=cov.get("historical", 0),
+        priced_ffill=cov.get("ffill", 0),
+        entries_skipped_no_quote=cov.get("skipped", 0),
+        symbols_without_option_data=cov.get("no_data_symbols", 0),
     )
 
 
-def run_equities_strategy(
-    strategy: Strategy,
-    bars_by_symbol: dict[str, list[Bar]],
-    bankroll: float = EQUITIES_BANKROLL,
-    progress: Progress | None = None,
-) -> StrategyResult:
+def _equities_backtest_setup(strategy: Strategy, bankroll: float):
+    """The (model, kelly, trade-management, backtest) config a strategy runs
+    under — shared by the synthetic-pricing path (run_equities_strategy) and
+    the real-quote path (run_equities_tournament_with_history)."""
     model = WeightedFactorModel(weights=strategy.weights, min_available_weight_fraction=strategy.min_coverage)
     kelly = KellySizer(kelly_fraction=strategy.equities.kelly_fraction)
     tm_config = TradeManagementConfig(
@@ -224,8 +245,21 @@ def run_equities_strategy(
         warmup_bars=_WARMUP_BARS,
         signal_confirmation_count=SIGNAL_CONFIRMATION_COUNT,
     )
-    engine = BacktestEngine(model, kelly, tm_config, config)
     notional_per_trade = bankroll * strategy.equities.kelly_fraction
+    return model, kelly, tm_config, config, notional_per_trade
+
+
+def run_equities_strategy(
+    strategy: Strategy,
+    bars_by_symbol: dict[str, list[Bar]],
+    bankroll: float = EQUITIES_BANKROLL,
+    progress: Progress | None = None,
+) -> StrategyResult:
+    """Synthetic (Black-Scholes) options pricing — the engine default. Kept
+    for tests and ad-hoc use; the tournament proper now runs the real-quote
+    path (run_equities_tournament_with_history)."""
+    model, kelly, tm_config, config, notional_per_trade = _equities_backtest_setup(strategy, bankroll)
+    engine = BacktestEngine(model, kelly, tm_config, config)
 
     started = time.monotonic()
     trades_with_time: list[tuple[datetime, float]] = []
@@ -255,6 +289,85 @@ def run_equities_strategy(
             f"P&L ${summary.total_pnl:>+11,.2f}  ({time.monotonic() - started:.0f}s){dropped_note}"
         )
     return summary
+
+
+async def run_equities_tournament_with_history(
+    strategies: Sequence[Strategy],
+    bars_by_symbol: dict[str, list[Bar]],
+    option_repo: OptionBarsRepository,
+    timeframe: str,
+    start: datetime,
+    end: datetime,
+    bankroll: float = EQUITIES_BANKROLL,
+    progress: Progress | None = None,
+    max_ffill_bars: int = 3,
+) -> list[StrategyResult]:
+    """Runs every strategy over the shared symbol set, pricing options from
+    real historical bars (`option_bars`). Memory-frugal: loads one symbol's
+    option series at a time, runs all strategies on it, then releases it —
+    the box this runs on has ~1 GB RAM.
+
+    Returns results sorted by total P&L, best first. Raises if `option_bars`
+    holds nothing for the universe (run backtesting.ingest_option_history)."""
+    exp_gte = start.date()
+    exp_lte = end.date() + timedelta(days=100)
+
+    setups = {s.name: _equities_backtest_setup(s, bankroll) for s in strategies}
+    trades: dict[str, list[tuple[datetime, float]]] = {s.name: [] for s in strategies}
+    traded_symbols: dict[str, set[str]] = {s.name: set() for s in strategies}
+    cov: dict[str, dict[str, int]] = {s.name: {"historical": 0, "ffill": 0, "skipped": 0} for s in strategies}
+    no_data_symbols = 0
+    priced_any = False
+
+    started = time.monotonic()
+    for symbol, bars in bars_by_symbol.items():
+        if len(bars) < _WARMUP_BARS + _VOL_LOOKBACK + 2:
+            continue
+        quotes = await build_historical_quote_source(
+            option_repo, symbol, timeframe, start, end, exp_gte, exp_lte, max_ffill_bars=max_ffill_bars
+        )
+        if quotes.contract_count == 0:
+            no_data_symbols += 1
+            continue
+        priced_any = True
+
+        for s in strategies:
+            model, kelly, tm_config, config, notional = setups[s.name]
+            engine = BacktestEngine(model, kelly, tm_config, config, quote_source=quotes)
+            result = engine.run(symbol, bars)
+            cov[s.name]["skipped"] += result.entries_skipped_no_quote
+            for t in result.trades:
+                if t.entry_cost_per_unit < _MIN_TRADEABLE_CONTRACT_COST:
+                    continue
+                cov[s.name][t.priced_from] = cov[s.name].get(t.priced_from, 0) + 1
+                stamp = datetime(t.exit_date.year, t.exit_date.month, t.exit_date.day, tzinfo=timezone.utc)
+                trades[s.name].append((stamp, _normalized_equity_pnl(t.entry_cost_per_unit, t.qty, t.pnl, notional)))
+                traded_symbols[s.name].add(symbol)
+        del quotes
+
+    if not priced_any:
+        raise RuntimeError(
+            "no option history found for the equities universe — run "
+            "`python -m backtesting.ingest_option_history --underlyings tournament "
+            f"--start {start.date()} --end {end.date()} --timeframe {timeframe}` first"
+        )
+
+    results = []
+    for s in strategies:
+        c = cov[s.name]
+        summary = _summarize(
+            s.name, trades[s.name], len(traded_symbols[s.name]), bankroll,
+            coverage={**c, "no_data_symbols": no_data_symbols},
+        )
+        results.append(summary)
+        if progress:
+            progress(
+                f"  [equities] {s.name:<16} {summary.trade_count:>4} trades  "
+                f"P&L ${summary.total_pnl:>+11,.2f}  "
+                f"real {c['historical']}/ffill {c['ffill']}/skip {c['skipped']}  "
+                f"({time.monotonic() - started:.0f}s)"
+            )
+    return sorted(results, key=lambda r: r.total_pnl, reverse=True)
 
 
 def run_forex_strategy(
@@ -342,10 +455,8 @@ async def run_tournament(
             symbols = symbols[:max_symbols]
         bars_by_symbol = await _load_bars(bars_repo, symbols, equities_timeframe, start, now)
         log(f"equities: {len(bars_by_symbol)} symbols, {equities_timeframe} bars, {equities_days}d lookback")
-        results = sorted(
-            (run_equities_strategy(s, bars_by_symbol, progress=progress) for s in strategies),
-            key=lambda r: r.total_pnl,
-            reverse=True,
+        results = await run_equities_tournament_with_history(
+            strategies, bars_by_symbol, OptionBarsRepository(pool), equities_timeframe, start, now, progress=progress
         )
         boards["equities"] = Leaderboard(
             market="equities",
