@@ -10,3 +10,4 @@ dist/
 build/
 mlruns/
 mlartifacts/
+tournament/results/
