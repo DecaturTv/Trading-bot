@@ -10,6 +10,27 @@ P&L is additive, non-compounding, and comparable across strategies, while a
 strategy that deliberately sizes bigger (higher Kelly / risk %) still shows
 proportionally bigger swings.
 
+Two guards keep the synthetic options pricer from blowing that up (forex has
+no equivalent problem — its per-trade P&L is r_multiple x notional, and
+r_multiple is bounded by the take-profit / stop):
+
+  * simulated_strategy_value is a Black-Scholes stub with no real chain or
+    liquidity behind it, so it happily prices a hopeless deep-OTM contract at
+    a fraction of a cent. The engine then "buys" millions of them
+    (qty = budget // entry_cost) and a single tick reprices the lot into the
+    billions. Trades entered below _MIN_TRADEABLE_CONTRACT_COST are dropped —
+    the live loop prices against a real chain and would never size or fill
+    one of these.
+  * Even above that floor, a cheap option's return on capital is effectively
+    unbounded on the upside (a $0.02 contract going to $2 is +9,900%). Return
+    on capital is clamped to [_ROC_FLOOR, _ROC_CAP] before scaling to the
+    notional so no single trade can dominate a many-thousand-trade aggregate
+    — the options analog of forex's r_multiple bound.
+
+Dropping the sub-floor trades can bias the mix slightly (a strategy that
+targets cheaper options loses more of them), but every strategy gets the same
+filter, and a ranking built on 1e14-contract phantom fills is worse.
+
 Scope / known simplification: each symbol (or pair) is still backtested
 independently — this is NOT a shared-capital portfolio simulation, so two
 symbols can "both" deploy the notional on the same day. Every strategy is
@@ -67,13 +88,33 @@ _VOL_LOOKBACK = 20
 _FOREX_PAIR_RE = r"^[A-Z]{3}_[A-Z]{3}$"
 
 
+# simulated_strategy_value returns a Black-Scholes price * 100, i.e. per-contract
+# dollars. Below ~$1/contract ($0.01/share) the stub is just noise — no real
+# broker fills a sub-penny option, and the engine's qty = budget // entry_cost
+# turns it into a 1e6–1e14-contract phantom position. Trades entered cheaper
+# than this are dropped from the tournament entirely.
+_MIN_TRADEABLE_CONTRACT_COST = 1.0
+
+# A long debit option/spread loses at most the premium paid (-100%); its upside
+# is convex but a single trade returning thousands of percent is the synthetic
+# pricer misbehaving on a near-zero premium, not signal. Clamp return-on-capital
+# to this band before scaling to the fixed notional so one outlier can't swamp
+# the sum. +10 still records a +1,000% trade as a large winner.
+_ROC_FLOOR = -1.0
+_ROC_CAP = 10.0
+
+
 def _normalized_equity_pnl(entry_cost_per_unit: float, qty: int, raw_pnl: float, notional_per_trade: float) -> float:
     """Re-scale one simulated options trade's P&L to a fixed per-trade notional
-    so results are additive rather than compounded (see module docstring)."""
+    so results are additive rather than compounded (see module docstring), with
+    return-on-capital clamped to [_ROC_FLOOR, _ROC_CAP] so a single
+    synthetic-pricing outlier can't dominate the sum."""
     capital_deployed = entry_cost_per_unit * qty
     if capital_deployed <= 0:
         return 0.0
-    return (raw_pnl / capital_deployed) * notional_per_trade
+    roc = raw_pnl / capital_deployed
+    roc = max(_ROC_FLOOR, min(_ROC_CAP, roc))
+    return roc * notional_per_trade
 
 
 def _normalized_forex_pnl(r_multiple: float, notional_per_trade: float) -> float:
@@ -187,22 +228,29 @@ def run_equities_strategy(
     started = time.monotonic()
     trades_with_time: list[tuple[datetime, float]] = []
     symbols_traded = 0
+    dropped_untradeable = 0
     for symbol, bars in bars_by_symbol.items():
         if len(bars) < _WARMUP_BARS + _VOL_LOOKBACK + 2:
             continue
         result = engine.run(symbol, bars)
-        if result.trades:
-            symbols_traded += 1
+        symbol_had_trade = False
         for t in result.trades:
+            if t.entry_cost_per_unit < _MIN_TRADEABLE_CONTRACT_COST:
+                dropped_untradeable += 1
+                continue
             stamp = datetime(t.exit_date.year, t.exit_date.month, t.exit_date.day, tzinfo=timezone.utc)
             pnl = _normalized_equity_pnl(t.entry_cost_per_unit, t.qty, t.pnl, notional_per_trade)
             trades_with_time.append((stamp, pnl))
+            symbol_had_trade = True
+        if symbol_had_trade:
+            symbols_traded += 1
 
     summary = _summarize(strategy.name, trades_with_time, symbols_traded, bankroll)
     if progress:
+        dropped_note = f"  (dropped {dropped_untradeable} sub-${_MIN_TRADEABLE_CONTRACT_COST:g} synthetic)" if dropped_untradeable else ""
         progress(
             f"  [equities] {strategy.name:<16} {summary.trade_count:>4} trades  "
-            f"P&L ${summary.total_pnl:>+11,.2f}  ({time.monotonic() - started:.0f}s)"
+            f"P&L ${summary.total_pnl:>+11,.2f}  ({time.monotonic() - started:.0f}s){dropped_note}"
         )
     return summary
 

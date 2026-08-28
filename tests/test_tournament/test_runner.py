@@ -5,6 +5,7 @@ import pytest
 from bt_factories import make_bars, make_hourly_bars
 
 from tournament.runner import (
+    _ROC_CAP,
     _normalized_equity_pnl,
     _normalized_forex_pnl,
     _pooled_drawdown,
@@ -31,6 +32,22 @@ def test_normalized_equity_pnl_does_not_compound_across_a_huge_raw_pnl():
     # Normalization must still land at +$200, not millions.
     huge = _normalized_equity_pnl(entry_cost_per_unit=1e6, qty=1000, raw_pnl=4e8, notional_per_trade=500.0)
     assert huge == pytest.approx(200.0)
+
+
+def test_normalized_equity_pnl_caps_a_synthetic_pricing_outlier():
+    # A near-zero premium ($1e-9/contract) the engine "bought" a billion of and
+    # that then repriced into the billions -> return on capital ~1e9. Without
+    # the clamp this one trade contributes ~1e12; with it, at most _ROC_CAP
+    # (10) x the notional.
+    capped = _normalized_equity_pnl(entry_cost_per_unit=1e-9, qty=1_000_000_000, raw_pnl=1e12, notional_per_trade=500.0)
+    assert capped == pytest.approx(10.0 * 500.0)
+
+
+def test_normalized_equity_pnl_floors_a_total_loss_at_minus_one_notional():
+    # Rounding in the synthetic value can push a wiped-out position slightly
+    # past -100%; a long debit trade can't lose more than the notional it stood in for.
+    floored = _normalized_equity_pnl(entry_cost_per_unit=100.0, qty=10, raw_pnl=-1500.0, notional_per_trade=500.0)
+    assert floored == pytest.approx(-500.0)
 
 
 def test_normalized_forex_pnl_is_r_multiple_times_notional():
@@ -90,6 +107,10 @@ def test_run_equities_strategy_produces_a_result_over_synthetic_bars():
     assert result.trade_count >= 1
     assert result.ending_bankroll == pytest.approx(2100.0 + result.total_pnl)
     assert 0 <= result.win_rate <= 1
+    # No trade may contribute more than _ROC_CAP x the per-trade notional
+    # (2100 x 0.25), so the aggregate can't run away the way the raw
+    # compounded engine P&L does.
+    assert abs(result.total_pnl) <= result.trade_count * _ROC_CAP * (2100.0 * 0.25)
 
 
 def test_run_equities_strategy_skips_symbols_with_too_little_history():
