@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     # paper-mode loss-limit breaches, which notify but never halt. Default 6h.
     alert_repeat_suppress_seconds: int = 21600
 
+    # Minimum severity that reaches Discord: "info" | "warning" | "critical".
+    # Default "warning" so routine entries and profit-target scale-outs (INFO)
+    # stay out of the channel — stop-losses, reversal exits, loss-limit
+    # breaches and halts (WARNING+) still come through, and the twice-daily
+    # progress report carries the full open/closed picture regardless.
+    discord_min_severity: str = "warning"
+
     # ML tracking (local file-based SQLite store — no tracking server needed)
     mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
 
@@ -255,6 +262,15 @@ class Settings(BaseSettings):
         if v <= 0:
             raise ValueError("must be positive")
         return v
+
+    @field_validator("discord_min_severity")
+    @classmethod
+    def _validate_discord_min_severity(cls, v: str) -> str:
+        allowed = {"info", "warning", "critical"}
+        norm = v.strip().lower()
+        if norm not in allowed:
+            raise ValueError(f"discord_min_severity must be one of {sorted(allowed)}")
+        return norm
 
     @field_validator("profit_target_dollars")
     @classmethod

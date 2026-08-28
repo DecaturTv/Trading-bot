@@ -91,5 +91,16 @@ def test_default_min_severities():
     from alerts.models import Severity
 
     routes_by_type = {type(r.notifier): r.min_severity for r in manager._routes}
-    assert routes_by_type[DiscordNotifier] is Severity.INFO
+    assert routes_by_type[DiscordNotifier] is Severity.WARNING  # settings.discord_min_severity default
     assert routes_by_type[SMSNotifier] is Severity.CRITICAL
+
+
+def test_discord_min_severity_follows_settings():
+    from alerts.models import Severity
+
+    settings = Settings(
+        _env_file=None, discord_webhook_url="https://discord.example/webhook", discord_min_severity="info"
+    )
+    manager = build_alert_manager(settings)
+    routes_by_type = {type(r.notifier): r.min_severity for r in manager._routes}
+    assert routes_by_type[DiscordNotifier] is Severity.INFO

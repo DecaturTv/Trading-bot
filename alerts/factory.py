@@ -12,16 +12,20 @@ from .telegram_notifier import TelegramNotifier
 
 def build_alert_manager(
     settings: Settings,
-    discord_min_severity: Severity = Severity.INFO,
+    discord_min_severity: Severity | None = None,
     telegram_min_severity: Severity = Severity.INFO,
     sms_min_severity: Severity = Severity.CRITICAL,
     email_min_severity: Severity = Severity.WARNING,
 ) -> AlertManager:
     """Wires up only the channels whose required config is fully present —
     each channel is opt-in, not required. Default min_severity per channel
-    reflects channel cost/noise: SMS is reserved for CRITICAL, Discord/
-    Telegram (typically the primary monitoring channel) get everything.
+    reflects channel cost/noise: SMS is reserved for CRITICAL, email for
+    WARNING+, Telegram gets everything. Discord's floor comes from
+    settings.discord_min_severity (default "warning" — routine entries and
+    profit-target scale-outs stay out of the channel).
     """
+    if discord_min_severity is None:
+        discord_min_severity = Severity(settings.discord_min_severity)
     routes: list[ChannelRoute] = []
 
     if settings.discord_webhook_url:
