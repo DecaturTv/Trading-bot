@@ -30,8 +30,13 @@ def make_contract(
 
 
 def make_config(**overrides):
-    # Matches the confirmed project rules: -50% stop, +100% scale-out, 20%
-    # trailing pullback thereafter, force-close 2 trading days before expiry.
+    # Matches the confirmed project rules: -50% stop, full close on a dollar
+    # profit target, 20% trailing pullback thereafter (still reachable if a
+    # position is directly constructed with scaled_out=True), force-close
+    # 2 trading days before expiry. profit_target_dollars defaults effectively
+    # disabled (100000.0) so unrelated tests' price moves don't accidentally
+    # trigger it; tests that care about the profit-target path override it
+    # explicitly to a reachable value.
     # stop_loss_confirmation_count/reversal_confirmation_count/
     # trailing_stop_confirmation_count default to 1 (fires on the first
     # breach/reversal/pullback) so existing single-snapshot tests don't need
@@ -39,8 +44,7 @@ def make_config(**overrides):
     # explicitly.
     defaults = dict(
         stop_loss_pct=0.50,
-        profit_target_pct=1.00,
-        scale_out_fraction=0.50,
+        profit_target_dollars=100000.0,
         trailing_stop_pct=0.20,
         min_trading_days_before_expiry=2,
         stop_loss_confirmation_count=1,

@@ -25,6 +25,15 @@ def is_equity_market_open(moment: datetime | None = None) -> bool:
     return _EQUITY_OPEN <= moment.time() < _EQUITY_CLOSE
 
 
+def is_us_market_weekday(moment: datetime | None = None) -> bool:
+    """Mon-Fri in US Eastern, any time of day (holidays not accounted for).
+
+    Gates the scheduled equities progress reports, one of which fires shortly
+    after the 16:00 close and so can't use is_equity_market_open.
+    """
+    return (moment or now_eastern()).astimezone(EASTERN).weekday() < 5
+
+
 def is_forex_market_open(moment: datetime | None = None) -> bool:
     """Forex trades ~24/5: Sun 17:00 ET to Fri 17:00 ET."""
     moment = (moment or now_eastern()).astimezone(EASTERN)

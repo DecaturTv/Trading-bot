@@ -125,7 +125,10 @@ class BacktestEngine:
             open_position.legs, current_bar.close, as_of, vol, self._config.risk_free_rate
         )
         dte = trading_days_until(open_position.expiration, as_of)
-        decision = evaluate_exit(open_position.state, current_value, dte, self._tm_config)
+        days_held = trading_days_until(as_of, open_position.entry_date)
+        decision = evaluate_exit(
+            open_position.state, current_value, dte, self._tm_config, trading_days_held=days_held
+        )
 
         if decision.action is ExitAction.NONE:
             if decision.stop_loss_streak != open_position.state.stop_loss_streak:

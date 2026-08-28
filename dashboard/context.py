@@ -112,23 +112,26 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     scanner_service = ScannerService(broker, universe_manager)
 
     decision_model = WeightedFactorModel()
-    forex_decision_model = WeightedFactorModel(weights=FOREX_WEIGHTS)
+    forex_decision_model = WeightedFactorModel(
+        weights=FOREX_WEIGHTS, min_available_weight_fraction=settings.forex_min_coverage_fraction
+    )
     kelly_sizer = KellySizer(kelly_fraction=settings.kelly_fraction)
 
-    halt_manager = HaltManager(HaltRepository(pool))
+    halt_manager = HaltManager(HaltRepository(pool), paper_mode=settings.trading_mode == "paper")
     pre_trade_checker = PreTradeChecker(halt_manager)
 
     executor = OrderExecutor(broker)
 
     trade_management_config = TradeManagementConfig(
         stop_loss_pct=settings.stop_loss_pct,
-        profit_target_pct=settings.profit_target_pct,
-        scale_out_fraction=settings.scale_out_fraction,
+        profit_target_dollars=settings.profit_target_dollars,
         trailing_stop_pct=settings.trailing_stop_pct,
         min_trading_days_before_expiry=settings.min_trading_days_before_expiry,
         stop_loss_confirmation_count=settings.stop_loss_confirmation_count,
         reversal_confirmation_count=settings.signal_confirmation_count,
         trailing_stop_confirmation_count=settings.trailing_stop_confirmation_count,
+        max_hold_trading_days=settings.max_hold_trading_days,
+        scale_out_fraction=settings.scale_out_fraction,
     )
     position_repository = PositionStateRepository(pool)
     stock_position_repository = StockPositionRepository(pool)

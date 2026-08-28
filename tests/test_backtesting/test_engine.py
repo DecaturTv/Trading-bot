@@ -21,7 +21,7 @@ def make_engine(confidence_threshold=90, target_dte=60, fallback_fraction=0.1, s
     model = WeightedFactorModel(weights=MOMENTUM_ONLY_WEIGHTS)
     kelly = KellySizer(fallback_fraction=fallback_fraction, min_sample_size=100)
     tm_defaults = dict(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50, trailing_stop_pct=0.20,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0, trailing_stop_pct=0.20,
         min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
         trailing_stop_confirmation_count=1,
     )
@@ -89,25 +89,27 @@ def test_stop_loss_closes_full_position_at_a_loss():
     assert result.ending_equity == pytest.approx(result.starting_equity + trade.pnl)
 
 
-def test_scale_out_then_trailing_stop_on_remainder():
-    engine = make_engine()
+def test_profit_target_scales_out_a_fraction_at_a_dollar_gain():
+    # profit_target_dollars overridden low enough that the rally clears it;
+    # the first exit is a partial scale-out (scale_out_fraction of the
+    # position), and the remainder is closed later (here at end-of-data).
+    engine = make_engine(profit_target_dollars=50.0)
     closes, rng = rising_closes_with_noise()
-    closes += [closes[-1] + 1.0, closes[-1] + 2.0]  # push over +100% -> scale_out
-    for _ in range(10):
-        closes.append(closes[-1] - 1.2)  # pull back -> trailing_stop on the rest
+    closes += [closes[-1] + 3.0]  # one more bar, past the $50 target, and the last bar of the run
+
     bars = make_bars(closes, spread=0.3)
 
     result = engine.run("TEST", bars)
 
-    assert len(result.trades) == 2
-    scale_out, trailing_stop = result.trades
-    assert scale_out.exit_reason == "scale_out"
-    assert trailing_stop.exit_reason == "trailing_stop"
-    assert scale_out.entry_date == trailing_stop.entry_date  # same original position
-    assert scale_out.pnl > 0
-    assert scale_out.qty + trailing_stop.qty == 9  # original position fully accounted for
-    total_pnl = scale_out.pnl + trailing_stop.pnl
-    assert result.ending_equity == pytest.approx(result.starting_equity + total_pnl)
+    assert [t.exit_reason for t in result.trades] == ["scale_out", "end_of_data"]
+    scale, remainder = result.trades
+    assert scale.pnl > 0
+    assert scale.qty >= 1
+    # 0.5 scale-out floors, so the remainder is at least as large as the slice sold.
+    assert remainder.qty >= scale.qty >= 1
+    assert result.ending_equity == pytest.approx(
+        result.starting_equity + scale.pnl + remainder.pnl
+    )
 
 
 def test_expiry_exit_force_closes_regardless_of_pnl():
@@ -127,6 +129,24 @@ def test_expiry_exit_force_closes_regardless_of_pnl():
 
     assert len(result.trades) == 1
     assert result.trades[0].exit_reason == "expiry_exit"
+
+
+def test_max_hold_cap_force_closes_the_day_after_entry():
+    # max_hold_trading_days=1: whatever the position is worth one trading day
+    # after entry, it's closed. make_bars produces weekday-only daily bars,
+    # so the bar after entry is always +1 trading day held.
+    engine = make_engine(signal_confirmation_count=2, max_hold_trading_days=1)
+    closes, rng = rising_closes_with_noise()
+    for _ in range(5):
+        closes.append(closes[-1] + rng.uniform(-0.2, 0.2))  # flat-ish: no stop/target trigger
+    bars = make_bars(closes, spread=0.3)
+
+    result = engine.run("TEST", bars)
+
+    assert result.trades
+    assert result.trades[0].exit_reason == "max_hold_exit"
+    held = (result.trades[0].exit_date - result.trades[0].entry_date).days
+    assert held <= 3  # 1 trading day, possibly spanning a weekend
 
 
 def test_open_position_at_end_of_data_is_force_closed_and_marked():

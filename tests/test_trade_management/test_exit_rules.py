@@ -183,29 +183,75 @@ def test_expiry_exit_takes_priority_over_reversal_exit():
 def test_config_rejects_non_positive_reversal_confirmation_count():
     with pytest.raises(ValueError):
         TradeManagementConfig(
-            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            stop_loss_pct=0.5, profit_target_dollars=50.0, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=0,
             trailing_stop_confirmation_count=1,
         )
 
 
-def test_scale_out_triggers_at_profit_target_and_closes_configured_fraction():
-    config = make_config(profit_target_pct=1.00, scale_out_fraction=0.50)
+def test_profit_target_scales_out_a_fraction_at_dollar_gain():
+    config = make_config(profit_target_dollars=50.0, scale_out_fraction=0.5)
     position = make_position(qty=4, entry_cost_per_unit=500.0, scaled_out=False)
 
-    decision = evaluate_exit(position, current_value_per_unit=1010.0, trading_days_to_expiry=10, config=config)
+    # dollar gain = 4 * (515 - 500) = 60 >= 50
+    decision = evaluate_exit(position, current_value_per_unit=515.0, trading_days_to_expiry=10, config=config)
 
     assert decision.action is ExitAction.SCALE_OUT
-    assert decision.qty_to_close == 2
+    assert decision.qty_to_close == 2  # int(4 * 0.5)
 
 
-def test_scale_out_does_not_retrigger_once_already_scaled_out():
-    config = make_config(profit_target_pct=1.00)
+def test_profit_target_full_closes_when_position_too_small_to_split():
+    config = make_config(profit_target_dollars=50.0, scale_out_fraction=0.5)
+    position = make_position(qty=1, entry_cost_per_unit=500.0, scaled_out=False)
+
+    # dollar gain = 1 * (560 - 500) = 60 >= 50; int(1 * 0.5) == 0 -> take it all
+    decision = evaluate_exit(position, current_value_per_unit=560.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.PROFIT_TARGET
+    assert decision.qty_to_close == 1
+
+
+def test_max_hold_exit_force_closes_ahead_of_every_other_rule():
+    config = make_config(max_hold_trading_days=1, stop_loss_pct=0.50, profit_target_dollars=50.0)
+    # Deep in profit AND past its holding-time cap: the cap wins.
+    position = make_position(qty=4, entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=900.0, trading_days_to_expiry=10, config=config, trading_days_held=1
+    )
+
+    assert decision.action is ExitAction.MAX_HOLD_EXIT
+    assert decision.qty_to_close == position.qty
+
+
+def test_max_hold_exit_does_not_fire_before_the_cap():
+    config = make_config(max_hold_trading_days=2)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=505.0, trading_days_to_expiry=10, config=config, trading_days_held=1
+    )
+
+    assert decision.action is ExitAction.NONE
+
+
+def test_profit_target_does_not_trigger_below_dollar_gain():
+    config = make_config(profit_target_dollars=50.0)
+    position = make_position(qty=4, entry_cost_per_unit=500.0, scaled_out=False)
+
+    # dollar gain = 4 * (510 - 500) = 40 < 50
+    decision = evaluate_exit(position, current_value_per_unit=510.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.NONE
+
+
+def test_profit_target_does_not_retrigger_once_already_scaled_out():
+    config = make_config(profit_target_dollars=50.0)
     position = make_position(entry_cost_per_unit=500.0, scaled_out=True, peak_gain_pct=1.5)
 
     decision = evaluate_exit(position, current_value_per_unit=1400.0, trading_days_to_expiry=10, config=config)
 
-    assert decision.action is not ExitAction.SCALE_OUT
+    assert decision.action is not ExitAction.PROFIT_TARGET
 
 
 def test_trailing_stop_triggers_after_scale_out_on_pullback():
@@ -266,7 +312,7 @@ def test_trailing_stop_streak_resets_once_back_within_tolerance():
 def test_config_rejects_non_positive_trailing_stop_confirmation_count():
     with pytest.raises(ValueError):
         TradeManagementConfig(
-            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            stop_loss_pct=0.5, profit_target_dollars=50.0, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
             trailing_stop_confirmation_count=0,
         )
@@ -286,16 +332,16 @@ def test_expiry_exit_takes_priority_over_everything_else():
 def test_config_rejects_non_positive_stop_loss():
     with pytest.raises(ValueError):
         TradeManagementConfig(
-            stop_loss_pct=0.0, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            stop_loss_pct=0.0, profit_target_dollars=50.0, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
             trailing_stop_confirmation_count=1,
         )
 
 
-def test_config_rejects_invalid_scale_out_fraction():
+def test_config_rejects_non_positive_profit_target_dollars():
     with pytest.raises(ValueError):
         TradeManagementConfig(
-            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=1.5, trailing_stop_pct=0.2,
+            stop_loss_pct=0.5, profit_target_dollars=0.0, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
             trailing_stop_confirmation_count=1,
         )
@@ -304,7 +350,7 @@ def test_config_rejects_invalid_scale_out_fraction():
 def test_config_rejects_negative_min_dte():
     with pytest.raises(ValueError):
         TradeManagementConfig(
-            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            stop_loss_pct=0.5, profit_target_dollars=50.0, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=-1, stop_loss_confirmation_count=1, reversal_confirmation_count=1,
             trailing_stop_confirmation_count=1,
         )
@@ -313,7 +359,18 @@ def test_config_rejects_negative_min_dte():
 def test_config_rejects_non_positive_stop_loss_confirmation_count():
     with pytest.raises(ValueError):
         TradeManagementConfig(
-            stop_loss_pct=0.5, profit_target_pct=1.0, scale_out_fraction=0.5, trailing_stop_pct=0.2,
+            stop_loss_pct=0.5, profit_target_dollars=50.0, trailing_stop_pct=0.2,
             min_trading_days_before_expiry=2, stop_loss_confirmation_count=0, reversal_confirmation_count=1,
             trailing_stop_confirmation_count=1,
         )
+
+
+def test_config_rejects_max_hold_trading_days_below_one():
+    with pytest.raises(ValueError):
+        make_config(max_hold_trading_days=0)
+
+
+@pytest.mark.parametrize("bad", [0.0, 1.0, -0.1, 1.5])
+def test_config_rejects_scale_out_fraction_outside_open_unit_interval(bad):
+    with pytest.raises(ValueError):
+        make_config(scale_out_fraction=bad)

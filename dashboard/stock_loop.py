@@ -13,6 +13,7 @@ from risk.streak import current_positive_day_streak, streak_adjusted_fraction
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
 from stocks.models import OpenStockPositionRecord
 from trade_management.exit_rules import evaluate_exit
+from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, PositionState
 from utils.time import is_equity_market_open
 
@@ -231,6 +232,7 @@ async def _manage_stock_position(context: AppContext, record: OpenStockPositionR
     decision = evaluate_exit(
         record.state, current_value, _NEVER_EXPIRES, context.trade_management_config,
         current_direction=current_direction, entry_direction=record.direction,
+        trading_days_held=trading_days_until(now.date(), record.entry_date),
     )
     if decision.action is ExitAction.NONE:
         if (

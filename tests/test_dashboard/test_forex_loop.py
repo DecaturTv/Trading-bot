@@ -474,6 +474,20 @@ async def test_progress_report_noop_when_market_closed():
 
 
 @pytest.mark.asyncio
+async def test_progress_report_includes_cumulative_pnl():
+    context = make_context()
+    context.forex_broker.get_account.return_value = make_account(equity=300.0)
+    context.trade_outcome_repository.pnls_since.return_value = [2.0, -5.0]  # today
+    context.trade_outcome_repository.recent_pnls.return_value = [2.0, -5.0, -40.0]  # all-time
+
+    await forex_progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "day_pnl=$-3.00" in alert.message
+    assert "cumulative_pnl=$-43.00" in alert.message
+
+
+@pytest.mark.asyncio
 async def test_progress_report_sends_status_message():
     context = make_context()
     context.forex_broker.get_account.return_value = make_account(equity=12345.67)

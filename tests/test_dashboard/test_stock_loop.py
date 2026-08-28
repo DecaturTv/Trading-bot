@@ -376,7 +376,7 @@ async def test_position_management_closes_full_position_on_stop_loss():
 async def test_position_management_defers_stop_loss_until_confirmed():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
         reversal_confirmation_count=1,
         trailing_stop_confirmation_count=1,
@@ -398,7 +398,7 @@ async def test_position_management_defers_stop_loss_until_confirmed():
 async def test_position_management_defers_trailing_stop_until_confirmed():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1, trailing_stop_confirmation_count=3,
     )
@@ -424,7 +424,7 @@ async def test_position_management_defers_trailing_stop_until_confirmed():
 async def test_position_management_closes_on_second_consecutive_trailing_stop_breach():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1, trailing_stop_confirmation_count=2,
     )
@@ -448,7 +448,7 @@ async def test_position_management_closes_on_second_consecutive_trailing_stop_br
 async def test_position_management_closes_on_confirmed_reversal():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1,
         trailing_stop_confirmation_count=1,
@@ -472,7 +472,7 @@ async def test_position_management_closes_on_confirmed_reversal():
 async def test_position_management_defers_reversal_exit_until_confirmed():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=3,
         trailing_stop_confirmation_count=1,
@@ -509,3 +509,53 @@ async def test_position_management_continues_after_one_symbol_raises():
     await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)  # must not raise
 
     context.stock_position_repository.delete.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_position_management_force_closes_after_max_hold_days():
+    # Record entry_date is 2026-07-01, the cycle runs 2026-07-21 -> held well
+    # past max_hold_trading_days=1, so it's force-closed regardless of P&L.
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_dollars=100000.0, trailing_stop_pct=0.20,
+        min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=1,
+        max_hold_trading_days=1,
+    )
+    record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0)
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=101.0)  # +1%, no other rule triggered
+    context.broker.submit_order.return_value = make_order(qty=10, side=OrderSide.SELL)
+
+    events = []
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
+
+    context.broker.submit_order.assert_awaited_once()
+    assert context.broker.submit_order.call_args.args[0].qty == 10
+    context.stock_position_repository.delete.assert_awaited_once_with("AAPL")
+    assert events[0]["action"] == "max_hold_exit"
+
+
+@pytest.mark.asyncio
+async def test_position_management_scales_out_a_fraction_at_profit_target():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_dollars=50.0, trailing_stop_pct=0.20,
+        min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=1,
+        scale_out_fraction=0.5,
+    )
+    record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0, scaled_out=False)
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=110.0)  # gain 10*(110-100)=100 >= 50
+    context.broker.submit_order.return_value = make_order(qty=5, side=OrderSide.SELL)
+
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    assert context.broker.submit_order.call_args.args[0].qty == 5  # int(10 * 0.5)
+    context.stock_position_repository.delete.assert_not_awaited()
+    context.stock_position_repository.upsert.assert_awaited_once()
+    persisted = context.stock_position_repository.upsert.call_args.args[0]
+    assert persisted.state.qty == 5
+    assert persisted.state.scaled_out is True

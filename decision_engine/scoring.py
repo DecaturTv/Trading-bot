@@ -15,33 +15,52 @@ from .factors import (
 )
 from .models import FactorScore, TradeDirection, TradeSignal
 
-# congress carries real weight (not a token addition) because a disclosed
-# buy/sell from a tracked member is meant to actually move the signal, not
-# get diluted to near-nothing by six technical factors -- see project memory
-# on the congress-trading feature. The other factors were scaled down
-# proportionally (each 0.8x its old value) so the total still sums to 1.0.
+# Momentum-only as of 2026-08-21: a 39-config sweep (composite blends,
+# individual factors alone, several confidence thresholds) replayed against
+# 30 real days of 1Day bars for 116 symbols through a shared-$2,100-balance
+# portfolio simulation (real position-count/exposure caps, one Kelly trade
+# history) ranked momentum-only @ confidence 55 the most profitable
+# (+177% over the window). The previous multi-factor blend (momentum 0.16,
+# trend 0.20, macd 0.12, unusual_volume 0.12, gap 0.08, candlestick 0.12,
+# congress 0.20) ranked well down the list under the same test. Caveat this
+# decision was made with, and should be revisited against once more real
+# trade history exists: with only 3-13 trades per config in that sample,
+# most configs' results (including this one) were dominated by 1-2 outsized
+# single trades rather than a statistically robust edge. See project memory.
 DEFAULT_WEIGHTS = {
+    "momentum": 1.0,
+    "trend": 0.0,
+    "macd": 0.0,
+    "unusual_volume": 0.0,
+    "gap": 0.0,
+    "candlestick": 0.0,
+    "congress": 0.0,
+}
+
+# Forex keeps the original multi-factor blend (not derived from
+# DEFAULT_WEIGHTS -- deliberately decoupled so the 2026-08-21 equities
+# reweight above doesn't silently change forex too, which wasn't part of
+# that decision) with unusual_volume excluded. Replaying the 24
+# fully-logged forex trades from 2026-07-23/24 against real OANDA candle
+# history showed this factor is anti-correlated with outcome there -- it
+# agreed with the trade's eventual direction on 9/9 losers and 0/4 winners.
+# OANDA's "volume" is synthetic tick count, not real traded volume; a
+# tick-volume spike on an hourly FX candle tends to mark a climax/exhaustion
+# move, not the start of a breakout the way a real equity volume spike often
+# does. Weight simply drops to 0 rather than being deleted from the dict --
+# WeightedFactorModel already excludes zero-weight factors and renormalizes
+# over what's left, the same mechanism used for a factor that's unavailable.
+# See project
+# memory on forex performance.
+FOREX_WEIGHTS = {
     "momentum": 0.16,
     "trend": 0.20,
     "macd": 0.12,
-    "unusual_volume": 0.12,
+    "unusual_volume": 0.0,
     "gap": 0.08,
     "candlestick": 0.12,
     "congress": 0.20,
 }
-
-# Forex-specific: unusual_volume excluded. Replaying the 24 fully-logged
-# forex trades from 2026-07-23/24 against real OANDA candle history showed
-# this factor is anti-correlated with outcome there -- it agreed with the
-# trade's eventual direction on 9/9 losers and 0/4 winners. OANDA's "volume"
-# is synthetic tick count, not real traded volume; a tick-volume spike on an
-# hourly FX candle tends to mark a climax/exhaustion move, not the start of
-# a breakout the way a real equity volume spike often does. Weight simply
-# drops to 0 rather than being deleted from the dict -- WeightedFactorModel
-# already excludes zero-weight factors and renormalizes over what's left,
-# the same mechanism used for a factor that's unavailable. See project
-# memory on forex performance.
-FOREX_WEIGHTS = {**DEFAULT_WEIGHTS, "unusual_volume": 0.0}
 
 _FACTOR_FUNCTIONS = {
     "momentum": lambda bars, scan_hits, congress_trades, tracked_members: momentum_factor(bars),

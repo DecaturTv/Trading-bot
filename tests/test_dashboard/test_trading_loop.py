@@ -482,7 +482,7 @@ async def test_position_management_cycle_full_exit_deletes_position_and_records_
 async def test_position_management_cycle_defers_stop_loss_until_confirmed():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
         reversal_confirmation_count=1,
         trailing_stop_confirmation_count=1,
@@ -515,7 +515,7 @@ async def test_position_management_cycle_defers_stop_loss_until_confirmed():
 async def test_position_management_cycle_closes_on_second_consecutive_stop_loss_breach():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=2,
         reversal_confirmation_count=1,
         trailing_stop_confirmation_count=1,
@@ -544,7 +544,7 @@ async def test_position_management_cycle_closes_on_second_consecutive_stop_loss_
 async def test_position_management_cycle_defers_trailing_stop_until_confirmed():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1, trailing_stop_confirmation_count=3,
     )
@@ -580,7 +580,7 @@ async def test_position_management_cycle_defers_trailing_stop_until_confirmed():
 async def test_position_management_cycle_closes_on_second_consecutive_trailing_stop_breach():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1, trailing_stop_confirmation_count=2,
     )
@@ -611,7 +611,7 @@ async def test_position_management_cycle_closes_on_second_consecutive_trailing_s
 async def test_position_management_cycle_closes_on_confirmed_reversal():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1,
         trailing_stop_confirmation_count=1,
@@ -643,7 +643,7 @@ async def test_position_management_cycle_closes_on_confirmed_reversal():
 async def test_position_management_cycle_defers_reversal_exit_until_confirmed():
     context = make_context()
     context.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=3,
         trailing_stop_confirmation_count=1,
@@ -786,10 +786,35 @@ async def test_progress_report_noop_when_notifier_not_configured():
 
 
 @pytest.mark.asyncio
-async def test_progress_report_noop_when_market_closed():
+async def test_progress_report_noop_on_weekend():
     context = make_context()
     await progress_report_cycle(context, MARKET_CLOSED_SATURDAY)
     context.progress_notifier.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_progress_report_sends_after_the_close_on_a_weekday():
+    # Scheduled twice daily, one firing ~16:10 ET -- past the 16:00 close, so
+    # it must gate on the weekday, not on the market currently being open.
+    context = make_context()
+    after_close = datetime(2026, 7, 21, 20, 10, tzinfo=timezone.utc)  # 16:10 ET on a Tuesday
+
+    await progress_report_cycle(context, after_close)
+
+    context.progress_notifier.send.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_progress_report_includes_cumulative_pnl():
+    context = make_context()
+    context.trade_outcome_repository.pnls_since.return_value = [10.0, -4.0]  # today
+    context.trade_outcome_repository.recent_pnls.return_value = [10.0, -4.0, -120.0, 30.0]  # all-time
+
+    await progress_report_cycle(context, MARKET_OPEN_TUESDAY)
+
+    alert = context.progress_notifier.send.call_args.args[0]
+    assert "day_pnl=$6.00" in alert.message
+    assert "cumulative_pnl=$-84.00" in alert.message
 
 
 @pytest.mark.asyncio
@@ -860,3 +885,64 @@ async def test_progress_report_omits_sections_when_nothing_to_show():
     alert = context.progress_notifier.send.call_args.args[0]
     assert "Open positions:" not in alert.message
     assert "Closed today:" not in alert.message
+
+
+@pytest.mark.asyncio
+async def test_position_management_cycle_force_closes_after_max_hold_days():
+    # Held well past max_hold_trading_days=1 (record entry_date is 2026-07-01,
+    # the cycle runs 2026-07-21) -> force-close at the current mark ahead of
+    # every other rule.
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=1,
+        max_hold_trading_days=1,
+    )
+    record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY)
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=4.9, ask=5.1, last_price=5.0, implied_volatility=0.3,  # mid 5.0 -> value 500, at break-even
+            greeks=OptionGreeks(delta=0.3, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+
+    events = []
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.position_repository.delete.assert_awaited_once_with("AAPL")
+    assert events[0]["action"] == "max_hold_exit"
+
+
+@pytest.mark.asyncio
+async def test_position_management_cycle_scales_out_a_fraction_at_profit_target():
+    context = make_context()
+    context.trade_management_config = TradeManagementConfig(
+        stop_loss_pct=0.50, profit_target_dollars=50.0,
+        trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
+        reversal_confirmation_count=1, trailing_stop_confirmation_count=1,
+        scale_out_fraction=0.5,
+    )
+    record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY, scaled_out=False)
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=6.99, ask=7.01, last_price=7.0, implied_volatility=0.3,  # mid 7.0 -> value 700; gain 2*(700-500)=400
+            greeks=OptionGreeks(delta=0.5, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.position_repository.delete.assert_not_awaited()
+    context.position_repository.upsert.assert_awaited_once()
+    persisted = context.position_repository.upsert.call_args.args[0]
+    assert persisted.state.qty == 1  # int(2 * 0.5)
+    assert persisted.state.scaled_out is True

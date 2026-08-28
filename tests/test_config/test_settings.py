@@ -8,8 +8,8 @@ def test_defaults_are_paper_mode():
     settings = Settings(_env_file=None)
     assert settings.trading_mode == "paper"
     assert settings.live_risk_ack is False
-    assert settings.confidence_threshold == 85
-    assert settings.stock_confidence_threshold == 65
+    assert settings.confidence_threshold == 75
+    assert settings.stock_confidence_threshold == 55
     assert settings.kelly_fraction == 0.25
 
 
@@ -64,11 +64,14 @@ def test_mlflow_tracking_uri_defaults_to_local_sqlite():
 
 def test_trade_management_defaults_match_confirmed_project_rules():
     settings = Settings(_env_file=None)
-    assert settings.stop_loss_pct == pytest.approx(0.50)
-    assert settings.profit_target_pct == pytest.approx(1.00)
-    assert settings.scale_out_fraction == pytest.approx(0.50)
+    # Reworked 2026-08-28: tight stop, scale out half at a small gain, never
+    # hold past 1 trading day.
+    assert settings.stop_loss_pct == pytest.approx(0.25)
+    assert settings.profit_target_dollars == pytest.approx(20.0)
     assert settings.trailing_stop_pct == pytest.approx(0.20)
     assert settings.min_trading_days_before_expiry == 2
+    assert settings.max_hold_trading_days == 1
+    assert settings.scale_out_fraction == pytest.approx(0.5)
     assert settings.stop_loss_confirmation_count == 2
     assert settings.trailing_stop_confirmation_count == 2
     assert settings.option_max_dte_deviation_days == 10
@@ -77,6 +80,19 @@ def test_trade_management_defaults_match_confirmed_project_rules():
 def test_autonomous_trading_enabled_by_default():
     settings = Settings(_env_file=None)
     assert settings.autonomous_trading_enabled is True
+
+
+def test_forex_defaults():
+    settings = Settings(_env_file=None)
+    assert settings.forex_entries_enabled is True
+    assert settings.forex_take_profit_r_multiple == pytest.approx(1.0)
+    assert settings.forex_min_coverage_fraction == pytest.approx(0.6)
+
+
+@pytest.mark.parametrize("bad", [0.0, -0.1, 1.5])
+def test_forex_min_coverage_fraction_must_be_in_unit_interval(bad):
+    with pytest.raises(ValueError):
+        Settings(_env_file=None, forex_min_coverage_fraction=bad)
 
 
 def test_dashboard_auth_token_unset_by_default():
@@ -88,10 +104,8 @@ def test_dashboard_auth_token_unset_by_default():
     "field,value",
     [
         ("stop_loss_pct", 0.0),
-        ("profit_target_pct", -0.1),
+        ("profit_target_dollars", -0.1),
         ("trailing_stop_pct", 0.0),
-        ("scale_out_fraction", 0.0),
-        ("scale_out_fraction", 1.5),
         ("min_trading_days_before_expiry", -1),
         ("option_target_delta", 0.0),
         ("option_target_delta", 1.5),
@@ -125,7 +139,7 @@ def test_oanda_credentials_unset_by_default():
 
 def test_forex_defaults():
     settings = Settings(_env_file=None)
-    assert settings.forex_confidence_threshold == 92
+    assert settings.forex_confidence_threshold == 85
     assert settings.forex_risk_pct_per_trade == pytest.approx(0.02)
     assert settings.forex_stop_atr_multiplier == pytest.approx(2.5)
     assert settings.forex_take_profit_r_multiple == pytest.approx(1.0)

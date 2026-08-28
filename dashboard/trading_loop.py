@@ -20,7 +20,7 @@ from trade_management.exit_rules import evaluate_exit
 from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, OpenPositionRecord, PersistedLeg, PositionState
 from trade_management.pnl import current_value_per_unit as compute_current_value_per_unit
-from utils.time import is_equity_market_open
+from utils.time import is_equity_market_open, is_us_market_weekday
 
 from .context import AppContext, get_effective_account
 
@@ -346,6 +346,7 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
     decision = evaluate_exit(
         record.state, current_value, dte, context.trade_management_config,
         current_direction=current_direction, entry_direction=record.direction,
+        trading_days_held=trading_days_until(now.date(), record.entry_date),
     )
     if decision.action is ExitAction.NONE:
         if (
@@ -406,14 +407,14 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
     anywhere), which slightly understates loss % since it already reflects
     the day's losses; a reasonable approximation, not exact.
 
-    Paper trading skips the weekly check (see paper_trading_daily_reset_cycle,
-    which auto-clears any halt once a day) -- the point of paper trading is
-    to take a bad day, learn from it, and start the next one clean, not
-    carry a rolling weekly drag from bugs already fixed.
+    Paper trading skips the weekly check -- the point of paper trading is to
+    take a bad day, learn from it, and keep going, not carry a rolling
+    weekly drag from bugs already fixed.
 
-    Only live trading actually halts on a breach. Paper trading evaluates
-    the exact same daily_loss_limit_pct/weekly_loss_limit_pct thresholds but
-    only notifies (what would have halted, and why) -- there's no real
+    Only live trading actually halts on a breach (HaltManager.is_halted is
+    hard-wired to False in paper mode). Paper trading evaluates the exact
+    same daily_loss_limit_pct/weekly_loss_limit_pct thresholds but only
+    notifies (what would have halted, and why) -- there's no real
     capital to protect, and letting a bad paper day keep running gives more
     signal on whether a fix (e.g. the reversal-confirmation change) actually
     helps than cutting the day short would. Live trading keeps the full
@@ -466,14 +467,15 @@ async def loss_limit_check_cycle(context: AppContext, now: datetime) -> None:
 
 
 async def progress_report_cycle(context: AppContext, now: datetime) -> None:
-    """Periodic Discord status ping for the equities/options side — separate
-    from the severity-gated AlertManager channels since this is a routine
-    update, not an event alert. No-ops if Discord isn't configured or the
-    market is closed. See forex_progress_report_cycle for the forex
-    counterpart, sent as its own alert."""
+    """Discord status ping for the equities/options side — separate from the
+    severity-gated AlertManager channels since this is a routine update, not
+    an event alert. Scheduled twice a trading day (midday + shortly after the
+    close), so it gates on the weekday, not on the market currently being
+    open. No-ops if Discord isn't configured. See forex_progress_report_cycle
+    for the forex counterpart, sent as its own alert."""
     if context.progress_notifier is None:
         return
-    if not is_equity_market_open(now):
+    if not is_us_market_weekday(now):
         return
 
     account = await get_effective_account(context)
@@ -483,6 +485,7 @@ async def progress_report_cycle(context: AppContext, now: datetime) -> None:
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="equities"))
+    cumulative_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="equities"))
     closed_today = [
         trade
         for trade in await context.trade_outcome_repository.recent_trades(limit=50, asset_class="equities")
@@ -490,7 +493,7 @@ async def progress_report_cycle(context: AppContext, now: datetime) -> None:
     ]
 
     lines = [
-        f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
+        f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} cumulative_pnl=${cumulative_pnl:,.2f} "
         f"open_options_positions={len(positions)} open_stock_positions={len(stock_positions)} "
         f"status={'HALTED' if halted else 'running'}"
     ]

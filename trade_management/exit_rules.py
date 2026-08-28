@@ -11,6 +11,7 @@ def evaluate_exit(
     config: TradeManagementConfig,
     current_direction: TradeDirection | None = None,
     entry_direction: TradeDirection | None = None,
+    trading_days_held: int = 0,
 ) -> ExitDecision:
     """Pure decision function — evaluates one snapshot in time. Peak-gain
     tracking for the trailing stop, and the stop-loss/reversal/trailing-stop
@@ -25,8 +26,27 @@ def evaluate_exit(
     position was opened on); omitting either treats this cycle as
     non-opposing (reversal_streak resets to 0), e.g. when the caller couldn't
     compute a fresh signal this cycle.
+
+    trading_days_held is how many trading days the position has been open;
+    once it reaches config.max_hold_trading_days the position is force-closed
+    (MAX_HOLD_EXIT), ahead of every other rule. Callers that don't track it
+    leave the default 0 and the cap never fires.
     """
     gain_pct = unrealized_gain_pct(position.entry_cost_per_unit, current_value_per_unit)
+
+    # Hard time cap, checked before anything else: a position that's been open
+    # its maximum allowed trading days is force-closed at the current mark
+    # regardless of P&L. Callers that don't track holding time (default
+    # trading_days_held=0) never trip this.
+    if trading_days_held >= config.max_hold_trading_days:
+        return ExitDecision(
+            action=ExitAction.MAX_HOLD_EXIT,
+            qty_to_close=position.qty,
+            reason=f"held {trading_days_held} trading day(s) >= max {config.max_hold_trading_days}",
+            stop_loss_streak=0,
+            reversal_streak=0,
+            trailing_stop_streak=0,
+        )
 
     if trading_days_to_expiry <= config.min_trading_days_before_expiry:
         return ExitDecision(
@@ -101,12 +121,28 @@ def evaluate_exit(
             trailing_stop_streak=trailing_stop_streak,
         )
 
-    if not position.scaled_out and gain_pct >= config.profit_target_pct:
-        qty_to_close = max(1, round(position.qty * config.scale_out_fraction))
+    dollar_gain = position.qty * (current_value_per_unit - position.entry_cost_per_unit)
+    if not position.scaled_out and dollar_gain >= config.profit_target_dollars:
+        scale_qty = int(position.qty * config.scale_out_fraction)
+        if scale_qty >= 1:
+            # Bank part of the gain now; the caller flips scaled_out=True on
+            # the remainder, which then rides the trailing stop below.
+            return ExitDecision(
+                action=ExitAction.SCALE_OUT,
+                qty_to_close=scale_qty,
+                reason=(
+                    f"unrealized gain ${dollar_gain:.2f} reached profit target ${config.profit_target_dollars:.2f}; "
+                    f"scaling out {scale_qty}/{position.qty}"
+                ),
+                stop_loss_streak=stop_loss_streak,
+                reversal_streak=reversal_streak,
+                trailing_stop_streak=trailing_stop_streak,
+            )
+        # Position too small to split (e.g. a single contract) — take it all.
         return ExitDecision(
-            action=ExitAction.SCALE_OUT,
-            qty_to_close=qty_to_close,
-            reason=f"unrealized gain {gain_pct:.1%} reached profit target {config.profit_target_pct:.1%}",
+            action=ExitAction.PROFIT_TARGET,
+            qty_to_close=position.qty,
+            reason=f"unrealized gain ${dollar_gain:.2f} reached profit target ${config.profit_target_dollars:.2f}",
             stop_loss_streak=stop_loss_streak,
             reversal_streak=reversal_streak,
             trailing_stop_streak=trailing_stop_streak,

@@ -29,10 +29,19 @@ class HaltManager:
     on one side halts only that side, not both.
     """
 
-    def __init__(self, repository: HaltRepository):
+    def __init__(self, repository: HaltRepository, paper_mode: bool = False):
         self._repository = repository
+        # Paper trading never actually halts: there's no capital to protect,
+        # and stopping entries mid-experiment just starves the very data
+        # we're iterating on. Loss limits are still evaluated and alerted on
+        # by the loss_limit_check cycles (notify-only) — see project memory
+        # and dashboard/trading_loop.loss_limit_check_cycle. Manual /halt
+        # calls still record an event (audit trail) but don't gate entries.
+        self._paper_mode = paper_mode
 
     async def is_halted(self, scope: str = "equities") -> bool:
+        if self._paper_mode:
+            return False
         latest = await self._repository.latest_event(scope)
         return latest is not None and latest["action"] == "halt"
 

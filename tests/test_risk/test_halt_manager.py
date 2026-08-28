@@ -54,6 +54,19 @@ async def test_resume_flips_state_back(pool):
 
 
 @pytest.mark.asyncio
+async def test_paper_mode_never_reports_halted_even_after_an_explicit_halt(pool):
+    # Paper trading has no capital to protect and stopping entries starves
+    # the data we're iterating on — is_halted is hard-wired False, though the
+    # halt event is still recorded for the audit trail.
+    manager = HaltManager(HaltRepository(pool), paper_mode=True)
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    await manager.halt("daily loss limit breached", now)
+
+    assert await manager.is_halted() is False
+
+
+@pytest.mark.asyncio
 async def test_state_reflects_most_recent_event_regardless_of_history(pool):
     manager = HaltManager(HaltRepository(pool))
     now = datetime.now(timezone.utc).replace(microsecond=0)

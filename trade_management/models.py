@@ -15,22 +15,26 @@ class TradeManagementConfig:
     silently-assumed number.
     """
 
-    stop_loss_pct: float  # e.g. 0.50 = close at -50% of premium paid
-    profit_target_pct: float  # e.g. 1.00 = scale out at +100% unrealized gain
-    scale_out_fraction: float  # e.g. 0.50 = close half the position at the profit target
+    stop_loss_pct: float  # e.g. 0.25 = close at -25% of premium paid
+    profit_target_dollars: float  # e.g. 20.0 = scale out scale_out_fraction of the position once unrealized gain reaches $20
     trailing_stop_pct: float  # pullback from peak gain % that closes the remainder after scale-out
     min_trading_days_before_expiry: int  # force-close this many trading days before expiration
     stop_loss_confirmation_count: int  # consecutive breaching checks required before a stop-loss actually closes
     reversal_confirmation_count: int  # consecutive checks the signal must oppose entry_direction before a reversal-exit closes
     trailing_stop_confirmation_count: int  # consecutive breaching checks required before a trailing-stop pullback actually closes
+    # Defaulted (unlike the business-rule numbers above) so the ~20
+    # construction sites don't all need an edit. max_hold_trading_days
+    # defaults effectively-disabled, same convention as tests' sentinel
+    # profit_target_dollars: production sets the real value (1) from
+    # settings.max_hold_trading_days via dashboard/context.py.
+    max_hold_trading_days: int = 10**9  # force-close a position once it's been open this many trading days, regardless of P&L
+    scale_out_fraction: float = 0.5  # fraction of the position to sell when profit_target_dollars is first reached
 
     def __post_init__(self):
-        for name in ("stop_loss_pct", "profit_target_pct", "trailing_stop_pct"):
+        for name in ("stop_loss_pct", "profit_target_dollars", "trailing_stop_pct"):
             value = getattr(self, name)
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
-        if not 0 < self.scale_out_fraction <= 1:
-            raise ValueError("scale_out_fraction must be in (0, 1]")
         if self.min_trading_days_before_expiry < 0:
             raise ValueError("min_trading_days_before_expiry must be >= 0")
         if self.stop_loss_confirmation_count < 1:
@@ -39,6 +43,10 @@ class TradeManagementConfig:
             raise ValueError("reversal_confirmation_count must be >= 1")
         if self.trailing_stop_confirmation_count < 1:
             raise ValueError("trailing_stop_confirmation_count must be >= 1")
+        if self.max_hold_trading_days < 1:
+            raise ValueError("max_hold_trading_days must be >= 1")
+        if not 0 < self.scale_out_fraction < 1:
+            raise ValueError("scale_out_fraction must be in (0, 1)")
 
 
 @dataclass(frozen=True)
@@ -85,10 +93,12 @@ class OpenPositionRecord:
 class ExitAction(str, Enum):
     NONE = "none"
     STOP_LOSS = "stop_loss"
+    PROFIT_TARGET = "profit_target"
     SCALE_OUT = "scale_out"
     TRAILING_STOP = "trailing_stop"
     EXPIRY_EXIT = "expiry_exit"
     REVERSAL_EXIT = "reversal_exit"
+    MAX_HOLD_EXIT = "max_hold_exit"  # force-close: position held its max allowed trading days
 
 
 @dataclass(frozen=True)

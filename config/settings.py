@@ -47,7 +47,10 @@ class Settings(BaseSettings):
     forex_account_start_balance: float = 300.0
 
     # Risk defaults
-    confidence_threshold: int = 85
+    # Lowered from 85 on 2026-08-21 to increase entry frequency (see project
+    # memory) -- kept above stock_confidence_threshold since options trade
+    # faster intraday timeframes with noisier signals.
+    confidence_threshold: int = 75
     # Stocks score entries on 1Day bars only (see dashboard/stock_loop.py),
     # where gap/volume-spike/candlestick/congress factors fire far less often
     # than on the options loop's intraday timeframes -- confirmed live
@@ -55,7 +58,8 @@ class Settings(BaseSettings):
     # (PLTR), next-best 62. The shared confidence_threshold (85, tuned for
     # options' intraday timeframes) was unreachable on 1Day, so stock entries
     # had been at zero for the entire prior week. See project memory.
-    stock_confidence_threshold: int = 65
+    # Lowered from 65 to 55 on 2026-08-21 to increase entry frequency.
+    stock_confidence_threshold: int = 55
     kelly_fraction: float = 0.25
     daily_loss_limit_pct: float = 0.05
     weekly_loss_limit_pct: float = 0.10
@@ -90,13 +94,21 @@ class Settings(BaseSettings):
     mlflow_tracking_uri: str = "sqlite:///mlruns/mlflow.db"
 
     # Trade management — confirmed project rules (see project memory), not
-    # engineering defaults: -50% stop, +100% scale-out, 20% trailing
-    # pullback thereafter, force-close 2 trading days before expiry.
-    stop_loss_pct: float = 0.50
-    profit_target_pct: float = 1.00
-    scale_out_fraction: float = 0.50
+    # engineering defaults. Reworked 2026-08-28 for a "lose a little, not a
+    # lot; take profits often" profile: tight -25% stop (was -50%); at +$20
+    # unrealized (was a $50 full close) scale out scale_out_fraction of the
+    # position and let the rest ride the 20% trailing pullback; force-close
+    # any position after max_hold_trading_days regardless of P&L (also
+    # force-close 2 trading days before expiry).
+    stop_loss_pct: float = 0.25
+    profit_target_dollars: float = 20.0
     trailing_stop_pct: float = 0.20
     min_trading_days_before_expiry: int = 2
+    # Hard holding-time cap: never carry a position (option or stock) longer
+    # than this many trading days. 1 = every trade is a same-/next-day
+    # directional bet; theta and multi-day drift stop mattering.
+    max_hold_trading_days: int = 1
+    scale_out_fraction: float = 0.5
     # Require a stop-loss breach to hold for this many consecutive
     # position-check cycles (position_check_interval_seconds apart) before
     # closing. Added 2026-07-27 after the ACI trade closed on a single noisy
@@ -145,9 +157,10 @@ class Settings(BaseSettings):
 
     # Discord progress report — opt-in, only runs if a Discord webhook is
     # configured; separate from the severity-gated AlertManager channels
-    # since it's a status ping, not an event alert. Drives both the stocks
-    # and (if OANDA is configured) forex progress reports, sent separately.
-    progress_report_interval_seconds: int = 1800
+    # since it's a status ping, not an event alert. Scheduled by
+    # dashboard/scheduler.py at fixed times (midday + just after the close),
+    # twice per trading day, for both the stocks and forex reports — no
+    # interval knob.
 
     # Dashboard — required for any request to succeed (fail-closed: no
     # token configured means no access, not open access)
@@ -158,7 +171,8 @@ class Settings(BaseSettings):
     # candles instead of stock bars. Stop-loss/take-profit are attached to
     # the order and managed by OANDA itself, not polled locally. Scans every
     # tradeable pair OANDA offers, fetched fresh each cycle — not a fixed list.
-    forex_confidence_threshold: int = 92
+    # Lowered from 92 to 85 on 2026-08-21 to increase entry frequency.
+    forex_confidence_threshold: int = 85
     forex_risk_pct_per_trade: float = 0.02
     forex_stop_atr_multiplier: float = 2.5
     # Lowered from 2.0 on 2026-07-25: replaying real closed trades against
@@ -170,6 +184,16 @@ class Settings(BaseSettings):
     forex_take_profit_r_multiple: float = 1.0
     forex_scan_interval_seconds: int = 300
     forex_position_check_interval_seconds: int = 120
+    # Minimum fraction of FOREX_WEIGHTS that must be available on a candle for
+    # the score to count (WeightedFactorModel.min_available_weight_fraction).
+    # Raised above the 0.5 default on 2026-08-28: momentum/trend/macd are
+    # near-collinear (all directional-momentum reads), and FX candles rarely
+    # surface gap/candlestick/congress, so at 0.5 forex was entering on the
+    # momentum trio alone -- one bet counted three times, 21% win rate on the
+    # 42-trade sample that got entries paused. 0.6 forces at least one
+    # independent factor (gap or a candlestick pattern) to agree before an
+    # entry. See project memory on forex performance.
+    forex_min_coverage_fraction: float = 0.6
     # See forex/exposure.py -- caps how many open positions can share a
     # currency, so correlated pairs (EUR_ZAR + CHF_ZAR + GBP_ZAR, all really
     # one bet on ZAR) can't all stack on the same underlying move.
@@ -205,7 +229,7 @@ class Settings(BaseSettings):
             raise ValueError("confidence_threshold must be between 0 and 100")
         return v
 
-    @field_validator("kelly_fraction", "forex_risk_pct_per_trade")
+    @field_validator("kelly_fraction", "forex_risk_pct_per_trade", "forex_min_coverage_fraction")
     @classmethod
     def _validate_unit_fraction(cls, v: float) -> float:
         if not 0 < v <= 1:
@@ -219,18 +243,32 @@ class Settings(BaseSettings):
             raise ValueError("loss limit percentages must be in (0, 1]")
         return v
 
-    @field_validator("stop_loss_pct", "profit_target_pct", "trailing_stop_pct")
+    @field_validator("stop_loss_pct", "trailing_stop_pct")
     @classmethod
     def _validate_positive_pct(cls, v: float) -> float:
         if v <= 0:
             raise ValueError("must be positive")
         return v
 
+    @field_validator("profit_target_dollars")
+    @classmethod
+    def _validate_profit_target_dollars(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("profit_target_dollars must be positive")
+        return v
+
     @field_validator("scale_out_fraction")
     @classmethod
     def _validate_scale_out_fraction(cls, v: float) -> float:
-        if not 0 < v <= 1:
-            raise ValueError("scale_out_fraction must be in (0, 1]")
+        if not 0 < v < 1:
+            raise ValueError("scale_out_fraction must be in (0, 1)")
+        return v
+
+    @field_validator("max_hold_trading_days")
+    @classmethod
+    def _validate_max_hold_trading_days(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("max_hold_trading_days must be >= 1")
         return v
 
     @field_validator("min_trading_days_before_expiry")
@@ -265,7 +303,6 @@ class Settings(BaseSettings):
         "option_target_dte",
         "scan_interval_seconds",
         "position_check_interval_seconds",
-        "progress_report_interval_seconds",
         "forex_scan_interval_seconds",
         "forex_position_check_interval_seconds",
         "intraday_5m_scan_interval_seconds",

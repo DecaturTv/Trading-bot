@@ -258,12 +258,12 @@ async def forex_loss_limit_check_cycle(context: AppContext, now: datetime) -> No
     equity rather than Alpaca's.
 
     Paper trading skips the weekly check, same reasoning as the equities
-    side: see trading_loop.loss_limit_check_cycle and
-    paper_reset.paper_trading_daily_reset_cycle.
+    side: see trading_loop.loss_limit_check_cycle.
 
-    Only live trading actually halts on a breach; paper trading evaluates
-    the same thresholds but only notifies, same reasoning as the equities
-    side -- see trading_loop.loss_limit_check_cycle."""
+    Only live trading actually halts on a breach (HaltManager.is_halted is
+    hard-wired to False in paper mode); paper trading evaluates the same
+    thresholds but only notifies, same reasoning as the equities side --
+    see trading_loop.loss_limit_check_cycle."""
     if context.forex_broker is None:
         return
     if await context.halt_manager.is_halted("forex"):
@@ -327,6 +327,7 @@ async def forex_progress_report_cycle(context: AppContext, now: datetime) -> Non
 
     day_start = datetime(now.year, now.month, now.day, tzinfo=now.tzinfo)
     daily_pnl = sum(await context.trade_outcome_repository.pnls_since(day_start, asset_class="forex"))
+    cumulative_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="forex"))
     closed_today = [
         trade
         for trade in await context.trade_outcome_repository.recent_trades(limit=50, asset_class="forex")
@@ -334,7 +335,7 @@ async def forex_progress_report_cycle(context: AppContext, now: datetime) -> Non
     ]
 
     lines = [
-        f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} "
+        f"equity=${account.equity:,.2f} day_pnl=${daily_pnl:,.2f} cumulative_pnl=${cumulative_pnl:,.2f} "
         f"open_positions={len(positions)} status={'HALTED' if halted else 'running'}"
     ]
 

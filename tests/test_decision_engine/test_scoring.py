@@ -54,10 +54,16 @@ def test_score_neutral_when_no_factors_available(monkeypatch):
 
 
 def test_score_neutral_when_factor_coverage_too_low(monkeypatch):
-    # Only "gap" (weight 0.10 of 1.0 total) is available — below the default
-    # 0.5 coverage requirement, so the score isn't trustworthy enough to act on.
+    # Only "gap" (weight 0.10 of 1.0 total configured) is available — below
+    # the default 0.5 coverage requirement, so the score isn't trustworthy
+    # enough to act on. Uses an explicit multi-factor weights dict rather
+    # than the module default (DEFAULT_WEIGHTS is momentum-only as of
+    # 2026-08-21, which can't exercise partial coverage at all — coverage
+    # would just be binary 0 or 1 with a single configured factor).
     patch_factors(monkeypatch, gap=1.0)
-    model = WeightedFactorModel()
+    model = WeightedFactorModel(
+        weights={"momentum": 0.30, "trend": 0.30, "macd": 0.20, "unusual_volume": 0.10, "gap": 0.10}
+    )
 
     signal = model.score("AAPL", [], [], confidence_threshold=50.0)
 
@@ -98,11 +104,49 @@ def test_rejects_unknown_factor_name():
 def test_forex_weights_zero_out_unusual_volume(monkeypatch):
     import decision_engine.scoring as scoring_module
 
-    assert scoring_module.FOREX_WEIGHTS["unusual_volume"] == 0.0
-    # Every other weight matches DEFAULT_WEIGHTS unchanged.
-    for name, weight in scoring_module.DEFAULT_WEIGHTS.items():
-        if name != "unusual_volume":
-            assert scoring_module.FOREX_WEIGHTS[name] == weight
+    # FOREX_WEIGHTS is deliberately decoupled from DEFAULT_WEIGHTS (see
+    # scoring.py comment) so equities-side reweighting can't silently change
+    # forex too -- assert its own fixed values directly rather than
+    # comparing against whatever DEFAULT_WEIGHTS currently is.
+    assert scoring_module.FOREX_WEIGHTS == {
+        "momentum": 0.16,
+        "trend": 0.20,
+        "macd": 0.12,
+        "unusual_volume": 0.0,
+        "gap": 0.08,
+        "candlestick": 0.12,
+        "congress": 0.20,
+    }
+
+
+def test_forex_coverage_floor_rejects_the_collinear_momentum_trio_alone(monkeypatch):
+    import decision_engine.scoring as scoring_module
+
+    # Only momentum/trend/macd fire (gap/candlestick/congress unavailable, as
+    # is typical on an FX candle). Their combined weight is 0.48 of the 0.88
+    # configured -> 0.545 coverage, below the 0.6 forex floor, so the score
+    # falls back to NEUTRAL rather than entering on one bet counted thrice.
+    patch_factors(monkeypatch, momentum=1.0, trend=1.0, macd=1.0)
+    model = WeightedFactorModel(weights=scoring_module.FOREX_WEIGHTS, min_available_weight_fraction=0.6)
+
+    signal = model.score("EUR_USD", bars=[], scan_hits=[], confidence_threshold=10.0)
+
+    assert signal.direction is TradeDirection.NEUTRAL
+    assert signal.meets_threshold is False
+
+
+def test_forex_coverage_floor_passes_once_an_independent_factor_agrees(monkeypatch):
+    import decision_engine.scoring as scoring_module
+
+    # momentum trio + a candlestick pattern -> 0.60 / 0.88 = 0.68 coverage,
+    # clears the 0.6 floor, so this is a tradeable signal.
+    patch_factors(monkeypatch, momentum=1.0, trend=1.0, macd=1.0, candlestick=1.0)
+    model = WeightedFactorModel(weights=scoring_module.FOREX_WEIGHTS, min_available_weight_fraction=0.6)
+
+    signal = model.score("EUR_USD", bars=[], scan_hits=[], confidence_threshold=10.0)
+
+    assert signal.direction is TradeDirection.BULLISH
+    assert signal.meets_threshold is True
 
 
 def test_unusual_volume_excluded_from_forex_scoring(monkeypatch):
@@ -121,13 +165,16 @@ def test_unusual_volume_excluded_from_forex_scoring(monkeypatch):
     assert all(f.name != "unusual_volume" for f in signal.factors)
 
 
-def test_congress_factor_is_included_in_default_weights_and_blended(monkeypatch):
-    # Every other factor bearish, congress alone bullish -- with congress's
-    # real DEFAULT_WEIGHTS share (0.20) it shouldn't be enough to flip the
-    # overall direction, proving it's actually wired into the blend (not
-    # ignored) without being so dominant it overrides everything else.
+def test_congress_factor_can_be_blended_without_dominating(monkeypatch):
+    # Every other factor bearish, congress alone bullish -- with a modest
+    # congress share (0.20, matching forex's fixed weighting -- DEFAULT_WEIGHTS
+    # itself is momentum-only as of 2026-08-21, so this uses an explicit
+    # weights dict rather than relying on the module default) it shouldn't be
+    # enough to flip the overall direction, proving the blending logic wires
+    # congress in (not ignored) without letting it override everything else.
     patch_factors(monkeypatch, momentum=-1.0, trend=-1.0, macd=-1.0, unusual_volume=-1.0, gap=-1.0, candlestick=-1.0, congress=1.0)
-    model = WeightedFactorModel()  # default weights
+    weights = {"momentum": 0.16, "trend": 0.20, "macd": 0.12, "unusual_volume": 0.12, "gap": 0.08, "candlestick": 0.12, "congress": 0.20}
+    model = WeightedFactorModel(weights=weights)
 
     signal = model.score("AAPL", bars=[], scan_hits=[], confidence_threshold=10.0)
 

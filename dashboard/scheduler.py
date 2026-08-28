@@ -11,7 +11,6 @@ from .forex_loop import (
     forex_position_management_cycle,
     forex_progress_report_cycle,
 )
-from .paper_reset import paper_trading_daily_reset_cycle
 from .stock_loop import stock_entry_cycle, stock_position_management_cycle
 from .trading_loop import (
     EventCallback,
@@ -64,9 +63,6 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     async def _forex_progress_report_job():
         await forex_progress_report_cycle(context, datetime.now(timezone.utc))
 
-    async def _paper_reset_job():
-        await paper_trading_daily_reset_cycle(context, datetime.now(timezone.utc))
-
     scheduler.add_job(
         _entry_job, IntervalTrigger(seconds=context.settings.scan_interval_seconds), id="entry_cycle",
         max_instances=1, coalesce=True,
@@ -99,17 +95,16 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
         _loss_limit_job, IntervalTrigger(seconds=context.settings.position_check_interval_seconds),
         id="loss_limit_check", max_instances=1, coalesce=True,
     )
-    # No-ops in live mode (see paper_reset.py) -- registered unconditionally
-    # so flipping trading_mode back to paper later doesn't need a restart.
-    scheduler.add_job(
-        _paper_reset_job, CronTrigger(hour=0, minute=5, timezone="America/New_York"),
-        id="paper_trading_daily_reset", max_instances=1, coalesce=True,
-    )
     if context.progress_notifier is not None:
-        scheduler.add_job(
-            _progress_report_job, IntervalTrigger(seconds=context.settings.progress_report_interval_seconds),
-            id="progress_report", max_instances=1, coalesce=True,
-        )
+        # Twice per trading day: a midday check-in and one ~10 min after the
+        # close with the day's final numbers. Both cycles gate on the weekday
+        # themselves (the close report intentionally fires after 16:00 ET).
+        for job_id, hour, minute in (("progress_report_midday", 12, 0), ("progress_report_close", 16, 10)):
+            scheduler.add_job(
+                _progress_report_job,
+                CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone="America/New_York"),
+                id=job_id, max_instances=1, coalesce=True,
+            )
     if context.forex_broker is not None:
         scheduler.add_job(
             _forex_entry_job, IntervalTrigger(seconds=context.settings.forex_scan_interval_seconds),
@@ -124,9 +119,11 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
             id="forex_loss_limit_check", max_instances=1, coalesce=True,
         )
         if context.progress_notifier is not None:
-            scheduler.add_job(
-                _forex_progress_report_job, IntervalTrigger(seconds=context.settings.progress_report_interval_seconds),
-                id="forex_progress_report", max_instances=1, coalesce=True,
-            )
+            for job_id, hour, minute in (("forex_progress_report_midday", 12, 0), ("forex_progress_report_close", 16, 10)):
+                scheduler.add_job(
+                    _forex_progress_report_job,
+                    CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone="America/New_York"),
+                    id=job_id, max_instances=1, coalesce=True,
+                )
 
     return scheduler

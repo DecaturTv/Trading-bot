@@ -132,7 +132,7 @@ def make_context(**overrides) -> AppContext:
     ctx.halt_manager.is_halted.return_value = False
     ctx.executor = AsyncMock()
     ctx.trade_management_config = TradeManagementConfig(
-        stop_loss_pct=0.50, profit_target_pct=1.00, scale_out_fraction=0.50,
+        stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,
         reversal_confirmation_count=1, trailing_stop_confirmation_count=1,
     )
