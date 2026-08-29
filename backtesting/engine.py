@@ -1,6 +1,6 @@
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 
 from broker.models import Bar, OptionRight
 from decision_engine.confirmation import is_confirmed, update_streak
@@ -31,6 +31,8 @@ class _OpenPosition:
     direction: TradeDirection
     entry_date: date
     state: PositionState
+    position_id: int = 0
+    entry_ts: datetime | None = None
 
 
 def _target_dte_to_expiration(as_of: date, target_dte_trading_days: int) -> date:
@@ -80,6 +82,7 @@ class BacktestEngine:
         confirmation_direction: TradeDirection | None = None
         confirmation_streak = 0
         entries_skipped_no_quote = 0
+        next_position_id = 1
 
         for i in range(self._config.warmup_bars, len(bars)):
             window = bars[: i + 1]
@@ -103,6 +106,10 @@ class BacktestEngine:
                 symbol, window, current_bar, as_of, vol, equity, trades, confirmation_direction, confirmation_streak
             )
             entries_skipped_no_quote += skipped
+            if open_position is not None:
+                open_position.position_id = next_position_id
+                open_position.entry_ts = current_bar.timestamp
+                next_position_id += 1
 
         if open_position is not None and last_bar_seen is not None and last_vol is not None:
             equity = self._force_close(symbol, open_position, last_bar_seen, last_vol, equity, trades)
@@ -151,6 +158,9 @@ class BacktestEngine:
                 exit_reason=decision.action.value,
                 pnl=pnl,
                 priced_from=mark.source,
+                entry_ts=open_position.entry_ts,
+                exit_ts=current_bar.timestamp,
+                position_id=open_position.position_id,
             )
         )
         equity += pnl
@@ -243,6 +253,9 @@ class BacktestEngine:
                 exit_reason="end_of_data",
                 pnl=pnl,
                 priced_from=source,
+                entry_ts=open_position.entry_ts,
+                exit_ts=last_bar.timestamp,
+                position_id=open_position.position_id,
             )
         )
         return equity + pnl

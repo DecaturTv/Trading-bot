@@ -43,7 +43,7 @@ from __future__ import annotations
 import sys
 import time
 from collections.abc import Callable, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta, timezone
 
 from broker.models import Bar
@@ -59,6 +59,7 @@ from backtesting.forex_engine import ForexBacktestEngine
 from backtesting.forex_models import ForexBacktestConfig
 from backtesting.models import BacktestConfig
 from backtesting.option_quote_source import FFILL, HISTORICAL, build_historical_quote_source
+from backtesting.portfolio_sim import PortfolioConfig, positions_from_trades, simulate_portfolio
 
 from .strategies import STRATEGIES, Strategy
 
@@ -145,6 +146,11 @@ class StrategyResult:
     priced_ffill: int = 0  # exits priced from a forward-filled real bar
     entries_skipped_no_quote: int = 0  # signals dropped because no real option bar was near
     symbols_without_option_data: int = 0
+    # Shared-capital portfolio sim (0 unless run via run_equities_portfolio_tournament):
+    positions_taken: int = 0
+    positions_skipped_capital: int = 0  # signal fired but capital was committed elsewhere
+    positions_skipped_slots: int = 0  # signal fired but the concurrent-position cap was hit
+    peak_concurrent: int = 0
 
     @property
     def return_pct(self) -> float:
@@ -370,6 +376,109 @@ async def run_equities_tournament_with_history(
     return sorted(results, key=lambda r: r.total_pnl, reverse=True)
 
 
+# Concurrent-position cap for the shared-capital sim — a proxy for what one
+# options account can realistically carry at once (margin, attention, the
+# live loop's own per-name exposure checks). Capital is the other limiter.
+PORTFOLIO_MAX_CONCURRENT = 12
+
+
+async def run_equities_portfolio_tournament(
+    strategies: Sequence[Strategy],
+    bars_by_symbol: dict[str, list[Bar]],
+    option_repo: OptionBarsRepository,
+    timeframe: str,
+    start: datetime,
+    end: datetime,
+    bankroll: float = EQUITIES_BANKROLL,
+    progress: Progress | None = None,
+    max_ffill_bars: int = 3,
+    max_concurrent: int = PORTFOLIO_MAX_CONCURRENT,
+) -> list[StrategyResult]:
+    """Real option quotes AND one shared bankroll: every symbol's candidate
+    positions replay against a single account (see backtesting.portfolio_sim)
+    — positions compete for capital, sizing compounds with equity. This is
+    the number to trust; run_equities_tournament_with_history's per-symbol
+    pools inflate returns.
+
+    Memory-frugal like run_equities_tournament_with_history: one symbol's
+    option data resident at a time. Raises if `option_bars` is empty."""
+    exp_gte = start.date()
+    exp_lte = end.date() + timedelta(days=100)
+
+    setups = {s.name: _equities_backtest_setup(s, bankroll) for s in strategies}
+    raw_trades: dict[str, list] = {s.name: [] for s in strategies}
+    entries_skipped: dict[str, int] = {s.name: 0 for s in strategies}
+    no_data_symbols = 0
+    priced_any = False
+
+    started = time.monotonic()
+    for symbol, bars in bars_by_symbol.items():
+        if len(bars) < _WARMUP_BARS + _VOL_LOOKBACK + 2:
+            continue
+        quotes = await build_historical_quote_source(
+            option_repo, symbol, timeframe, start, end, exp_gte, exp_lte, max_ffill_bars=max_ffill_bars
+        )
+        if quotes.contract_count == 0:
+            no_data_symbols += 1
+            continue
+        priced_any = True
+        for s in strategies:
+            model, kelly, tm_config, config, _notional = setups[s.name]
+            result = BacktestEngine(model, kelly, tm_config, config, quote_source=quotes).run(symbol, bars)
+            entries_skipped[s.name] += result.entries_skipped_no_quote
+            raw_trades[s.name].extend(result.trades)
+        del quotes
+
+    if not priced_any:
+        raise RuntimeError(
+            "no option history found for the equities universe — run "
+            "`python -m backtesting.ingest_option_history --underlyings tournament "
+            f"--start {start.date()} --end {end.date()} --timeframe {timeframe}` first"
+        )
+
+    results: list[StrategyResult] = []
+    for s in strategies:
+        # Fresh Kelly sizer for the portfolio: same fractional-Kelly multiplier
+        # as the strategy, that multiplier as the small-sample fallback, and a
+        # hard per-position cap so one position can't take the whole account.
+        portfolio_kelly = KellySizer(
+            kelly_fraction=s.equities.kelly_fraction,
+            fallback_fraction=s.equities.kelly_fraction,
+            max_position_fraction=0.34,
+        )
+        candidates = positions_from_trades(raw_trades[s.name])
+        sim = simulate_portfolio(
+            candidates,
+            PortfolioConfig(
+                starting_equity=bankroll, kelly_sizer=portfolio_kelly, max_concurrent_positions=max_concurrent
+            ),
+        )
+        summary = _summarize(
+            s.name, sim.realized, len(sim.symbols_traded), bankroll,
+            coverage={
+                "historical": sim.priced_historical, "ffill": sim.priced_ffill,
+                "skipped": entries_skipped[s.name], "no_data_symbols": no_data_symbols,
+            },
+        )
+        summary = replace(
+            summary,
+            positions_taken=sim.positions_taken,
+            positions_skipped_capital=sim.positions_skipped_capital,
+            positions_skipped_slots=sim.positions_skipped_slots,
+            peak_concurrent=sim.peak_concurrent,
+        )
+        results.append(summary)
+        if progress:
+            progress(
+                f"  [equities] {s.name:<16} {sim.positions_taken:>4} pos  "
+                f"P&L ${sim.total_pnl:>+11,.2f} ({sim.return_pct:+.1%})  "
+                f"DD {sim.max_drawdown_pct:.1%}  peak {sim.peak_concurrent} concurrent  "
+                f"skip cap/slot {sim.positions_skipped_capital}/{sim.positions_skipped_slots}  "
+                f"({time.monotonic() - started:.0f}s)"
+            )
+    return sorted(results, key=lambda r: r.total_pnl, reverse=True)
+
+
 def run_forex_strategy(
     strategy: Strategy,
     bars_by_pair: dict[str, list[Bar]],
@@ -436,13 +545,17 @@ async def run_tournament(
     equities_days: int = EQUITIES_DAYS_DEFAULT,
     forex_days: int = FOREX_DAYS_DEFAULT,
     equities_timeframe: str = EQUITIES_TIMEFRAME,
+    equities_bankroll: float = EQUITIES_BANKROLL,
     max_symbols: int | None = None,
     strategies: Sequence[Strategy] = tuple(STRATEGIES),
     progress: Progress | None = _stderr_progress,
 ) -> dict[str, Leaderboard]:
     """market: "equities" | "forex" | "both". Returns one Leaderboard per market
     run. max_symbols caps the universe per market (first N alphabetically) for a
-    quick smoke run. Pass progress=None to silence the per-strategy log."""
+    quick smoke run. equities_bankroll is the single shared account the
+    portfolio sim sizes against — raise it above the $2,100 paper split to give
+    the strategy comparison a real sample (on $2,100 only ~1-2 option positions
+    fit at once). Pass progress=None to silence the per-strategy log."""
     bars_repo = BarsRepository(pool)
     now = datetime.now(timezone.utc)
     boards: dict[str, Leaderboard] = {}
@@ -455,15 +568,16 @@ async def run_tournament(
             symbols = symbols[:max_symbols]
         bars_by_symbol = await _load_bars(bars_repo, symbols, equities_timeframe, start, now)
         log(f"equities: {len(bars_by_symbol)} symbols, {equities_timeframe} bars, {equities_days}d lookback")
-        results = await run_equities_tournament_with_history(
-            strategies, bars_by_symbol, OptionBarsRepository(pool), equities_timeframe, start, now, progress=progress
+        results = await run_equities_portfolio_tournament(
+            strategies, bars_by_symbol, OptionBarsRepository(pool), equities_timeframe, start, now,
+            bankroll=equities_bankroll, progress=progress,
         )
         boards["equities"] = Leaderboard(
             market="equities",
             timeframe=equities_timeframe,
             period_start=start,
             period_end=now,
-            starting_bankroll=EQUITIES_BANKROLL,
+            starting_bankroll=equities_bankroll,
             symbol_count=len(bars_by_symbol),
             results=results,
         )

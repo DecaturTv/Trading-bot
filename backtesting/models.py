@@ -1,5 +1,5 @@
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, datetime
 
 from decision_engine.models import TradeDirection
 from options.models import StrategyType
@@ -20,6 +20,13 @@ class SimulatedTrade:
     # How the exit was priced: "historical" / "ffill" (real option bars, see
     # backtesting.option_quote_source) or "simulated" (Black-Scholes stub).
     priced_from: str = "simulated"
+    # Bar timestamps for the entry and this exit leg, and an id shared by
+    # every leg of the same position — the shared-capital portfolio sim
+    # (backtesting.portfolio_sim) replays legs in timestamp order and needs
+    # to group them back into positions.
+    entry_ts: datetime | None = None
+    exit_ts: datetime | None = None
+    position_id: int = 0
 
 
 @dataclass(frozen=True)

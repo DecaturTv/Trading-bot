@@ -24,7 +24,13 @@ from data.database import Database
 from .promote import promote as do_promote
 from .promote import winner_from_latest
 from .report import persist, render_leaderboard
-from .runner import EQUITIES_DAYS_DEFAULT, EQUITIES_TIMEFRAME, FOREX_DAYS_DEFAULT, run_tournament
+from .runner import (
+    EQUITIES_BANKROLL,
+    EQUITIES_DAYS_DEFAULT,
+    EQUITIES_TIMEFRAME,
+    FOREX_DAYS_DEFAULT,
+    run_tournament,
+)
 
 
 async def _run(args: argparse.Namespace) -> int:
@@ -37,6 +43,7 @@ async def _run(args: argparse.Namespace) -> int:
             equities_days=args.equities_days,
             forex_days=args.forex_days,
             equities_timeframe=args.equities_timeframe,
+            equities_bankroll=args.equities_bankroll,
             max_symbols=args.max_symbols,
         )
     finally:
@@ -72,6 +79,9 @@ def main(argv: list[str] | None = None) -> int:
                        help=f"forex lookback window in calendar days (default {FOREX_DAYS_DEFAULT})")
     run_p.add_argument("--equities-timeframe", default=EQUITIES_TIMEFRAME,
                        help=f"bar timeframe for the equities board (default {EQUITIES_TIMEFRAME}; e.g. 5Min, 1Hour)")
+    run_p.add_argument("--equities-bankroll", type=float, default=EQUITIES_BANKROLL,
+                       help=f"shared account the portfolio sim sizes against (default {EQUITIES_BANKROLL:.0f}; "
+                            "raise it to give the strategy comparison a real sample)")
     run_p.add_argument("--max-symbols", type=int, default=None,
                        help="cap the universe per market (first N alphabetically) — for a quick smoke run")
     run_p.add_argument("--no-save", action="store_true", help="print only; do not write results files")

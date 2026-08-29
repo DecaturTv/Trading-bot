@@ -55,6 +55,15 @@ def render_leaderboard(board: Leaderboard) -> str:
     if board.winner:
         lines += ["", f"WINNER: {board.winner.name}  (+${board.winner.total_pnl:,.2f}, {board.winner.return_pct:+.1%})"]
 
+    if any(r.positions_taken or r.positions_skipped_capital or r.positions_skipped_slots for r in board.results):
+        lines += ["", "Shared-capital portfolio (one bankroll; positions compete for capital, sizing compounds):"]
+        for r in board.results:
+            lines.append(
+                f"  {r.name:<16} {r.positions_taken} taken, "
+                f"skipped {r.positions_skipped_capital} (capital) / {r.positions_skipped_slots} (slots), "
+                f"peak {r.peak_concurrent} concurrent"
+            )
+
     if any(r.priced_historical or r.priced_ffill or r.entries_skipped_no_quote for r in board.results):
         lines += ["", "Real-quote coverage (exits priced from real option bars vs forward-filled; entries skipped for no quote):"]
         for r in board.results:
@@ -94,6 +103,10 @@ def _board_dict(board: Leaderboard) -> dict:
                 "priced_ffill": r.priced_ffill,
                 "entries_skipped_no_quote": r.entries_skipped_no_quote,
                 "symbols_without_option_data": r.symbols_without_option_data,
+                "positions_taken": r.positions_taken,
+                "positions_skipped_capital": r.positions_skipped_capital,
+                "positions_skipped_slots": r.positions_skipped_slots,
+                "peak_concurrent": r.peak_concurrent,
             }
             for i, r in enumerate(board.results, start=1)
         ],
