@@ -36,7 +36,7 @@ def test_get_halt_status():
     context.halt_manager.is_halted.return_value = True
     with make_client(context) as client:
         response = client.get("/api/halt", headers=AUTH)
-    assert response.json() == {"equities": True, "forex": True}
+    assert response.json() == {"equities": True, "forex": True, "breakout": True}
 
 
 def test_post_halt_without_scope_halts_both():
@@ -44,10 +44,10 @@ def test_post_halt_without_scope_halts_both():
     with make_client(context) as client:
         response = client.post("/api/halt", headers=AUTH, json={"reason": "test"})
     assert response.status_code == 200
-    assert response.json() == {"equities": True, "forex": True}
-    assert context.halt_manager.halt.await_count == 2
+    assert response.json() == {"equities": True, "forex": True, "breakout": True}
+    assert context.halt_manager.halt.await_count == 3
     scopes_called = {call.args[2] for call in context.halt_manager.halt.call_args_list}
-    assert scopes_called == {"equities", "forex"}
+    assert scopes_called == {"equities", "forex", "breakout"}
     assert context.halt_manager.halt.call_args_list[0].args[0] == "test"
 
 
@@ -66,8 +66,8 @@ def test_post_resume_without_scope_resumes_both():
     with make_client(context) as client:
         response = client.post("/api/resume", headers=AUTH, json={})
     assert response.status_code == 200
-    assert response.json() == {"equities": False, "forex": False}
-    assert context.halt_manager.resume.await_count == 2
+    assert response.json() == {"equities": False, "forex": False, "breakout": False}
+    assert context.halt_manager.resume.await_count == 3
 
 
 def test_get_universe():

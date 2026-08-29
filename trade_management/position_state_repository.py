@@ -10,7 +10,7 @@ from options.models import StrategyType
 from .models import OpenPositionRecord, PersistedLeg, PositionState
 
 _UPSERT_SQL = """
-INSERT INTO trade_management_positions
+INSERT INTO {table}
     (symbol, strategy_type, direction, entry_date, legs, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, stop_loss_streak, reversal_streak, trailing_stop_streak, updated_at)
 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11, $12, $13)
 ON CONFLICT (symbol) DO UPDATE SET
@@ -32,9 +32,6 @@ _COLUMNS = (
     "symbol, strategy_type, direction, entry_date, legs, qty, entry_cost_per_unit, scaled_out, peak_gain_pct, "
     "stop_loss_streak, reversal_streak, trailing_stop_streak"
 )
-_GET_SQL = f"SELECT {_COLUMNS} FROM trade_management_positions WHERE symbol = $1"
-_GET_ALL_SQL = f"SELECT {_COLUMNS} FROM trade_management_positions ORDER BY symbol"
-_DELETE_SQL = "DELETE FROM trade_management_positions WHERE symbol = $1"
 
 
 def _serialize_legs(legs: list[PersistedLeg]) -> str:
@@ -90,15 +87,27 @@ class PositionStateRepository:
     max_positions_per_symbol=1. If that cap is ever raised, this repository
     needs a compound key (e.g. symbol + entry order id) to track multiple
     concurrent positions in the same underlying.
+
+    `table` selects the backing table so a second options strategy can keep
+    its open positions apart from the default one (see
+    trade_management/breakout_position_schema.py). Both tables share the same
+    DDL, so all the (de)serialization here is reused unchanged.
     """
 
-    def __init__(self, pool: asyncpg.Pool):
+    def __init__(self, pool: asyncpg.Pool, table: str = "trade_management_positions"):
+        if not table.replace("_", "").isalnum():
+            raise ValueError(f"unsafe table name: {table!r}")
         self._pool = pool
+        self._table = table
+        self._upsert_sql = _UPSERT_SQL.format(table=table)
+        self._get_sql = f"SELECT {_COLUMNS} FROM {table} WHERE symbol = $1"
+        self._get_all_sql = f"SELECT {_COLUMNS} FROM {table} ORDER BY symbol"
+        self._delete_sql = f"DELETE FROM {table} WHERE symbol = $1"
 
     async def upsert(self, record: OpenPositionRecord, updated_at: datetime) -> None:
         async with self._pool.acquire() as conn:
             await conn.execute(
-                _UPSERT_SQL,
+                self._upsert_sql,
                 record.symbol,
                 record.strategy_type.value,
                 record.direction.value,
@@ -116,14 +125,14 @@ class PositionStateRepository:
 
     async def get(self, symbol: str) -> OpenPositionRecord | None:
         async with self._pool.acquire() as conn:
-            row = await conn.fetchrow(_GET_SQL, symbol)
+            row = await conn.fetchrow(self._get_sql, symbol)
         return _row_to_record(row) if row else None
 
     async def get_all(self) -> list[OpenPositionRecord]:
         async with self._pool.acquire() as conn:
-            rows = await conn.fetch(_GET_ALL_SQL)
+            rows = await conn.fetch(self._get_all_sql)
         return [_row_to_record(r) for r in rows]
 
     async def delete(self, symbol: str) -> None:
         async with self._pool.acquire() as conn:
-            await conn.execute(_DELETE_SQL, symbol)
+            await conn.execute(self._delete_sql, symbol)

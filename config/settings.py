@@ -45,6 +45,10 @@ class Settings(BaseSettings):
     # smaller percentage of a bigger simulated account than originally tuned.
     stock_account_start_balance: float = 2100.0
     forex_account_start_balance: float = 300.0
+    # The "Breakout Hunter" parallel options strategy's own synthetic paper
+    # account (see dashboard/breakout_loop.py) — separate P&L partition, not a
+    # real second brokerage account.
+    breakout_account_start_balance: float = 5000.0
 
     # Risk defaults
     # Lowered from 85 on 2026-08-21 to increase entry frequency (see project

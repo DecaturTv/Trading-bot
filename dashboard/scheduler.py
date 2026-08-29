@@ -4,6 +4,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
+from .breakout_loop import (
+    breakout_entry_cycle,
+    breakout_loss_limit_check_cycle,
+    breakout_position_management_cycle,
+    breakout_progress_report_cycle,
+)
 from .context import AppContext
 from .forex_loop import (
     forex_entry_cycle,
@@ -63,6 +69,27 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     async def _forex_progress_report_job():
         await forex_progress_report_cycle(context, datetime.now(timezone.utc))
 
+    async def _breakout_entry_job():
+        await breakout_entry_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _breakout_entry_job_5m():
+        await breakout_entry_cycle(context, datetime.now(timezone.utc), on_event, timeframe="5Min")
+
+    async def _breakout_entry_job_15m():
+        await breakout_entry_cycle(context, datetime.now(timezone.utc), on_event, timeframe="15Min")
+
+    async def _breakout_entry_job_1h():
+        await breakout_entry_cycle(context, datetime.now(timezone.utc), on_event, timeframe="1Hour")
+
+    async def _breakout_position_job():
+        await breakout_position_management_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _breakout_loss_limit_job():
+        await breakout_loss_limit_check_cycle(context, datetime.now(timezone.utc))
+
+    async def _breakout_progress_report_job():
+        await breakout_progress_report_cycle(context, datetime.now(timezone.utc))
+
     scheduler.add_job(
         _entry_job, IntervalTrigger(seconds=context.settings.scan_interval_seconds), id="entry_cycle",
         max_instances=1, coalesce=True,
@@ -95,6 +122,19 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
         _loss_limit_job, IntervalTrigger(seconds=context.settings.position_check_interval_seconds),
         id="loss_limit_check", max_instances=1, coalesce=True,
     )
+
+    # "Breakout Hunter" parallel options strategy (dashboard/breakout_loop.py) —
+    # same cadence as the momentum loop, its own cycles / account / positions.
+    for job, seconds, job_id in (
+        (_breakout_entry_job, context.settings.scan_interval_seconds, "breakout_entry_cycle"),
+        (_breakout_entry_job_5m, context.settings.intraday_5m_scan_interval_seconds, "breakout_entry_cycle_5m"),
+        (_breakout_entry_job_15m, context.settings.intraday_15m_scan_interval_seconds, "breakout_entry_cycle_15m"),
+        (_breakout_entry_job_1h, context.settings.intraday_1h_scan_interval_seconds, "breakout_entry_cycle_1h"),
+        (_breakout_position_job, context.settings.position_check_interval_seconds, "breakout_position_management_cycle"),
+        (_breakout_loss_limit_job, context.settings.position_check_interval_seconds, "breakout_loss_limit_check"),
+    ):
+        scheduler.add_job(job, IntervalTrigger(seconds=seconds), id=job_id, max_instances=1, coalesce=True)
+
     if context.progress_notifier is not None:
         # Twice per trading day: a midday check-in and one ~10 min after the
         # close with the day's final numbers. Both cycles gate on the weekday
@@ -102,6 +142,12 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
         for job_id, hour, minute in (("progress_report_midday", 12, 0), ("progress_report_close", 16, 10)):
             scheduler.add_job(
                 _progress_report_job,
+                CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone="America/New_York"),
+                id=job_id, max_instances=1, coalesce=True,
+            )
+        for job_id, hour, minute in (("breakout_progress_report_midday", 12, 0), ("breakout_progress_report_close", 16, 10)):
+            scheduler.add_job(
+                _breakout_progress_report_job,
                 CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone="America/New_York"),
                 id=job_id, max_instances=1, coalesce=True,
             )

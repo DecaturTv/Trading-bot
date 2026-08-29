@@ -19,7 +19,7 @@ from data.database import Database
 from data.ingestion import BarIngestionService
 from data.option_history_schema import apply_option_history_schema
 from data.schema import apply_schema
-from decision_engine.scoring import FOREX_WEIGHTS, WeightedFactorModel
+from decision_engine.scoring import BREAKOUT_WEIGHTS, FOREX_WEIGHTS, WeightedFactorModel
 from decision_engine.signal_confirmation_repository import SignalConfirmationRepository
 from decision_engine.signal_confirmation_schema import apply_signal_confirmation_schema
 from execution.executor import OrderExecutor
@@ -44,6 +44,7 @@ from scanner.universe_schema import apply_universe_schema
 from stocks.position_repository import StockPositionRepository
 from stocks.position_schema import apply_stock_position_schema
 from trade_management.models import TradeManagementConfig
+from trade_management.breakout_position_schema import apply_breakout_position_schema
 from trade_management.position_state_repository import PositionStateRepository
 from trade_management.position_state_schema import apply_position_state_schema
 
@@ -59,12 +60,15 @@ class AppContext:
     scanner_service: ScannerService
     decision_model: WeightedFactorModel
     forex_decision_model: WeightedFactorModel
+    breakout_decision_model: WeightedFactorModel
     kelly_sizer: KellySizer
+    breakout_kelly_sizer: KellySizer
     pre_trade_checker: PreTradeChecker
     halt_manager: HaltManager
     executor: OrderExecutor
     trade_management_config: TradeManagementConfig
     position_repository: PositionStateRepository
+    breakout_position_repository: PositionStateRepository
     stock_position_repository: StockPositionRepository
     signal_confirmation_repository: SignalConfirmationRepository
     # Serializes the commit step (pre-trade check -> size -> submit order ->
@@ -76,6 +80,7 @@ class AppContext:
     # (bar fetch, signal scoring, option chain) stays outside the lock so
     # cycles don't serialize on the slow part, only the actual commit.
     equities_entry_lock: asyncio.Lock
+    breakout_entry_lock: asyncio.Lock
     trade_outcome_repository: TradeOutcomeRepository
     feature_store_repository: FeatureStoreRepository
     alert_manager: AlertManager
@@ -98,6 +103,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     await apply_optionable_schema(pool)
     await apply_halt_schema(pool)
     await apply_position_state_schema(pool)
+    await apply_breakout_position_schema(pool)
     await apply_feature_store_schema(pool)
     await apply_trade_outcome_schema(pool)
     await apply_forex_position_schema(pool)
@@ -117,7 +123,12 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     forex_decision_model = WeightedFactorModel(
         weights=FOREX_WEIGHTS, min_available_weight_fraction=settings.forex_min_coverage_fraction
     )
+    # "Breakout Hunter" — parallel options strategy, own $5k account (see
+    # dashboard/breakout_loop.py). 0.30 coverage floor: it trades volatility
+    # events (gap / unusual-volume / candlestick), which are individually sparse.
+    breakout_decision_model = WeightedFactorModel(weights=BREAKOUT_WEIGHTS, min_available_weight_fraction=0.30)
     kelly_sizer = KellySizer(kelly_fraction=settings.kelly_fraction)
+    breakout_kelly_sizer = KellySizer(kelly_fraction=0.20, fallback_fraction=0.20)
 
     halt_manager = HaltManager(HaltRepository(pool), paper_mode=settings.trading_mode == "paper")
     pre_trade_checker = PreTradeChecker(halt_manager)
@@ -136,9 +147,11 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         scale_out_fraction=settings.scale_out_fraction,
     )
     position_repository = PositionStateRepository(pool)
+    breakout_position_repository = PositionStateRepository(pool, table="breakout_positions")
     stock_position_repository = StockPositionRepository(pool)
     signal_confirmation_repository = SignalConfirmationRepository(pool)
     equities_entry_lock = asyncio.Lock()
+    breakout_entry_lock = asyncio.Lock()
     trade_outcome_repository = TradeOutcomeRepository(pool)
     feature_store_repository = FeatureStoreRepository(pool)
 
@@ -170,15 +183,19 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         scanner_service=scanner_service,
         decision_model=decision_model,
         forex_decision_model=forex_decision_model,
+        breakout_decision_model=breakout_decision_model,
         kelly_sizer=kelly_sizer,
+        breakout_kelly_sizer=breakout_kelly_sizer,
         pre_trade_checker=pre_trade_checker,
         halt_manager=halt_manager,
         executor=executor,
         trade_management_config=trade_management_config,
         position_repository=position_repository,
+        breakout_position_repository=breakout_position_repository,
         stock_position_repository=stock_position_repository,
         signal_confirmation_repository=signal_confirmation_repository,
         equities_entry_lock=equities_entry_lock,
+        breakout_entry_lock=breakout_entry_lock,
         trade_outcome_repository=trade_outcome_repository,
         feature_store_repository=feature_store_repository,
         alert_manager=alert_manager,
@@ -223,4 +240,18 @@ async def get_effective_forex_account(context: AppContext) -> Account:
     account = await context.forex_broker.get_account()
     if context.settings.trading_mode == "paper":
         return replace(account, equity=context.settings.forex_account_start_balance)
+    return account
+
+
+async def get_effective_breakout_account(context: AppContext) -> Account:
+    """The Breakout Hunter strategy's own synthetic account (see
+    dashboard/breakout_loop.py): settings.breakout_account_start_balance plus
+    its realized P&L (asset_class="breakout"). Unrealized P&L is omitted — same
+    simplification get_effective_forex_account makes — because
+    broker.get_positions() is the combined book and can't be split between the
+    two options strategies. Fine for 1-day-max-hold positions."""
+    account = await context.broker.get_account()
+    if context.settings.trading_mode == "paper":
+        realized_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="breakout"))
+        return replace(account, equity=context.settings.breakout_account_start_balance + realized_pnl)
     return account

@@ -62,6 +62,26 @@ FOREX_WEIGHTS = {
     "congress": 0.20,
 }
 
+# The "Breakout Hunter" preset from the strategy tournament, run live in
+# parallel with DEFAULT_WEIGHTS on its own $5,000 paper account (see
+# dashboard/breakout_loop.py). Volatility-event driven: gap + unusual-volume +
+# candlestick only, low coverage floor (0.30). In the shared-capital portfolio
+# tournament (real option quotes, tournament_20260829T012340Z) it returned
+# +100.9% with a 70% win rate and was the most *executable* of the four
+# presets — only 141 of its wanted entries had no real option quote at the
+# 15-min mark (near-money short-DTE contracts are liquid), versus 24,756 for
+# the nominal winner. Paired with confidence 58 / delta 0.15 / DTE 20 /
+# Kelly 0.20 (constants in breakout_loop.py).
+BREAKOUT_WEIGHTS = {
+    "momentum": 0.0,
+    "trend": 0.0,
+    "macd": 0.0,
+    "unusual_volume": 0.35,
+    "gap": 0.40,
+    "candlestick": 0.25,
+    "congress": 0.0,
+}
+
 _FACTOR_FUNCTIONS = {
     "momentum": lambda bars, scan_hits, congress_trades, tracked_members: momentum_factor(bars),
     "trend": lambda bars, scan_hits, congress_trades, tracked_members: trend_factor(bars),

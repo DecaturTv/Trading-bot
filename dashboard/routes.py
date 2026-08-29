@@ -5,7 +5,12 @@ from fastapi import APIRouter, Request
 from ml.forex_performance import FOREX_SYMBOL_PATTERN, build_forex_performance_report
 from risk.statistics import compute_trade_statistics
 
-from .context import AppContext, get_effective_account, get_effective_forex_account
+from .context import (
+    AppContext,
+    get_effective_account,
+    get_effective_breakout_account,
+    get_effective_forex_account,
+)
 
 router = APIRouter(prefix="/api")
 
@@ -51,7 +56,17 @@ async def get_forex_account(request: Request):
     return await get_effective_forex_account(context) if context.forex_broker is not None else None
 
 
-_HALT_SCOPES = ("equities", "forex")
+@router.get("/breakout/positions")
+async def get_breakout_positions(request: Request):
+    return await _context(request).breakout_position_repository.get_all()
+
+
+@router.get("/breakout/account")
+async def get_breakout_account(request: Request):
+    return await get_effective_breakout_account(_context(request))
+
+
+_HALT_SCOPES = ("equities", "forex", "breakout")
 
 
 @router.get("/halt")

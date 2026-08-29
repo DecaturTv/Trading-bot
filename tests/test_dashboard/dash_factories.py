@@ -105,6 +105,7 @@ def make_context(**overrides) -> AppContext:
         forex_stop_atr_multiplier=1.5,
         forex_take_profit_r_multiple=2.0,
         forex_max_positions_per_currency=2,
+        breakout_account_start_balance=5000.0,
     )
     ctx.db = AsyncMock()
     ctx.broker = AsyncMock()
@@ -126,7 +127,9 @@ def make_context(**overrides) -> AppContext:
     ctx.scanner_service = AsyncMock()
     ctx.decision_model = MagicMock()
     ctx.forex_decision_model = MagicMock()
+    ctx.breakout_decision_model = MagicMock()
     ctx.kelly_sizer = MagicMock()
+    ctx.breakout_kelly_sizer = MagicMock()
     ctx.pre_trade_checker = AsyncMock()
     ctx.halt_manager = AsyncMock()
     ctx.halt_manager.is_halted.return_value = False
@@ -139,12 +142,16 @@ def make_context(**overrides) -> AppContext:
     ctx.position_repository = AsyncMock()
     ctx.position_repository.get.return_value = None
     ctx.position_repository.get_all.return_value = []
+    ctx.breakout_position_repository = AsyncMock()
+    ctx.breakout_position_repository.get.return_value = None
+    ctx.breakout_position_repository.get_all.return_value = []
     ctx.stock_position_repository = AsyncMock()
     ctx.stock_position_repository.get.return_value = None
     ctx.stock_position_repository.get_all.return_value = []
     ctx.signal_confirmation_repository = AsyncMock()
     ctx.signal_confirmation_repository.get.return_value = None
     ctx.equities_entry_lock = asyncio.Lock()
+    ctx.breakout_entry_lock = asyncio.Lock()
     ctx.trade_outcome_repository = AsyncMock()
     ctx.trade_outcome_repository.recent_pnls.return_value = []
     ctx.trade_outcome_repository.pnls_since.return_value = []

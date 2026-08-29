@@ -156,3 +156,26 @@ async def test_legs_round_trip_correctly(pool):
     assert fetched.strategy_type is StrategyType.LONG_CALL
     assert fetched.direction is TradeDirection.BULLISH
     assert fetched.entry_date == ENTRY_DATE
+
+
+@pytest.mark.asyncio
+async def test_table_arg_isolates_two_strategies_on_the_same_symbol(pool):
+    default_repo = PositionStateRepository(pool)  # trade_management_positions
+    breakout_repo = PositionStateRepository(pool, table="breakout_positions")
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+
+    await default_repo.upsert(make_record(symbol="AAPL", qty=4), updated_at=now)
+    await breakout_repo.upsert(make_record(symbol="AAPL", qty=9), updated_at=now)
+
+    assert (await default_repo.get("AAPL")).state.qty == 4
+    assert (await breakout_repo.get("AAPL")).state.qty == 9
+    assert [r.state.qty for r in await breakout_repo.get_all()] == [9]
+
+    await breakout_repo.delete("AAPL")
+    assert await breakout_repo.get("AAPL") is None
+    assert (await default_repo.get("AAPL")).state.qty == 4  # untouched
+
+
+def test_table_arg_rejects_unsafe_names(pool):
+    with pytest.raises(ValueError):
+        PositionStateRepository(pool, table="foo; DROP TABLE bar")
