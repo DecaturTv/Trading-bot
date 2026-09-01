@@ -213,6 +213,8 @@ def _build_alpaca_order_request(order: OrderRequest):
         side=_SIDE_TO_ALPACA[order.side],
         time_in_force=_TIF_TO_ALPACA[order.time_in_force],
     )
+    if order.position_intent is not None:
+        kwargs["position_intent"] = _POSITION_INTENT_TO_ALPACA[order.position_intent]
     if order.order_type is OrderType.MARKET:
         return MarketOrderRequest(**kwargs)
     if order.order_type is OrderType.LIMIT:

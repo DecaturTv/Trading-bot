@@ -42,6 +42,12 @@ def build_close_order_request(
             order_type=OrderType.LIMIT,
             time_in_force=time_in_force,
             limit_price=limit_price,
+            # Without this tag Alpaca reads a SELL on a long option as opening
+            # a naked short and rejects it as "uncovered" — the close never
+            # fills and the position rots to its max-hold force-exit.
+            position_intent=(
+                PositionIntent.SELL_TO_CLOSE if close_side is OrderSide.SELL else PositionIntent.BUY_TO_CLOSE
+            ),
         )
 
     legs = []

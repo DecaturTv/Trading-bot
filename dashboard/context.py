@@ -26,6 +26,8 @@ from execution.executor import OrderExecutor
 from forex.oanda_adapter import OandaAdapter
 from forex.position_repository import ForexPositionRepository
 from forex.position_schema import apply_forex_position_schema
+from forex.xsmom_repository import ForexXsmomRepository
+from forex.xsmom_schema import apply_forex_xsmom_schema
 from ml.feature_store_repository import FeatureStoreRepository
 from ml.feature_store_schema import apply_feature_store_schema
 from ml.trade_outcome_repository import TradeOutcomeRepository
@@ -87,6 +89,7 @@ class AppContext:
     progress_notifier: Notifier | None
     forex_broker: OandaAdapter | None
     forex_position_repository: ForexPositionRepository | None
+    forex_xsmom_repository: ForexXsmomRepository | None
     congress_trade_manager: CongressTradeManager
 
 
@@ -107,6 +110,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     await apply_feature_store_schema(pool)
     await apply_trade_outcome_schema(pool)
     await apply_forex_position_schema(pool)
+    await apply_forex_xsmom_schema(pool)
     await apply_stock_position_schema(pool)
     await apply_congress_schema(pool)
     await apply_signal_confirmation_schema(pool)
@@ -127,8 +131,17 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     # dashboard/breakout_loop.py). 0.30 coverage floor: it trades volatility
     # events (gap / unusual-volume / candlestick), which are individually sparse.
     breakout_decision_model = WeightedFactorModel(weights=BREAKOUT_WEIGHTS, min_available_weight_fraction=0.30)
-    kelly_sizer = KellySizer(kelly_fraction=settings.kelly_fraction)
-    breakout_kelly_sizer = KellySizer(kelly_fraction=0.20, fallback_fraction=0.20)
+    # fallback_fraction was defaulting to 0.45 — under 30 trades of history the
+    # equities/stock loop sized every entry at 45% of equity, which is how a
+    # single BITO option loss ran -$520 on a $2,100 account (2026-08). Match
+    # the breakout account's conservative pre-sample fraction.
+    kelly_sizer = KellySizer(kelly_fraction=settings.kelly_fraction, fallback_fraction=0.08)
+    # fallback_fraction 0.20 sized every pre-30-trade entry at 20% of the $5k
+    # account: 5 positions maxed the 90% exposure cap and single stop-outs ran
+    # $250-450. 0.06 (~$300/position) matches the ~8%/slot sizing of the
+    # shared-capital portfolio backtest this preset came from and keeps a
+    # working -25% stop near -$75.
+    breakout_kelly_sizer = KellySizer(kelly_fraction=0.20, fallback_fraction=0.06)
 
     halt_manager = HaltManager(HaltRepository(pool), paper_mode=settings.trading_mode == "paper")
     pre_trade_checker = PreTradeChecker(halt_manager)
@@ -137,6 +150,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
 
     trade_management_config = TradeManagementConfig(
         stop_loss_pct=settings.stop_loss_pct,
+        catastrophic_stop_pct=settings.catastrophic_stop_pct,
         profit_target_dollars=settings.profit_target_dollars,
         trailing_stop_pct=settings.trailing_stop_pct,
         min_trading_days_before_expiry=settings.min_trading_days_before_expiry,
@@ -163,9 +177,11 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
 
     forex_broker: OandaAdapter | None = None
     forex_position_repository: ForexPositionRepository | None = None
+    forex_xsmom_repository: ForexXsmomRepository | None = None
     if settings.oanda_api_key and settings.oanda_account_id:
         forex_broker = OandaAdapter(settings.oanda_api_key, settings.oanda_account_id, live=settings.trading_mode == "live")
         forex_position_repository = ForexPositionRepository(pool)
+        forex_xsmom_repository = ForexXsmomRepository(pool)
 
     congress_trade_manager = CongressTradeManager(
         HouseStockWatcherSource(),
@@ -202,6 +218,7 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         progress_notifier=progress_notifier,
         forex_broker=forex_broker,
         forex_position_repository=forex_position_repository,
+        forex_xsmom_repository=forex_xsmom_repository,
         congress_trade_manager=congress_trade_manager,
     )
 

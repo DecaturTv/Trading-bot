@@ -11,3 +11,6 @@ build/
 mlruns/
 mlartifacts/
 tournament/results/
+
+# session run outputs (backfills, tournament, sweeps)
+*.log

@@ -22,6 +22,8 @@ def test_close_single_long_call_sells_at_current_bid():
     assert request.side is OrderSide.SELL
     assert request.qty == 2
     assert request.limit_price == pytest.approx(9.0)
+    # must be tagged or Alpaca rejects the close as an uncovered short
+    assert request.position_intent is PositionIntent.SELL_TO_CLOSE
 
 
 def test_close_single_long_put():
@@ -34,6 +36,7 @@ def test_close_single_long_put():
     assert request.side is OrderSide.SELL
     assert request.symbol == "P1"
     assert request.limit_price == pytest.approx(3.0)
+    assert request.position_intent is PositionIntent.SELL_TO_CLOSE
 
 
 def test_close_debit_vertical_spread_reverses_legs():

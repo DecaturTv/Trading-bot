@@ -34,6 +34,24 @@ def evaluate_exit(
     """
     gain_pct = unrealized_gain_pct(position.entry_cost_per_unit, current_value_per_unit)
 
+    # Hard tail stop, checked before everything: a position down
+    # catastrophic_stop_pct or more is closed now, no confirmation streak. The
+    # normal stop_loss_pct waits for stop_loss_confirmation_count consecutive
+    # breaching checks (to ignore a single wide/noisy quote); on a real gap
+    # that lag is how a -25% stop realises as a -80% loss.
+    if gain_pct <= -config.catastrophic_stop_pct:
+        return ExitDecision(
+            action=ExitAction.STOP_LOSS,
+            qty_to_close=position.qty,
+            reason=(
+                f"unrealized loss {gain_pct:.1%} breached catastrophic stop "
+                f"-{config.catastrophic_stop_pct:.1%} — closing immediately, no confirmation"
+            ),
+            stop_loss_streak=position.stop_loss_streak + 1,
+            reversal_streak=0,
+            trailing_stop_streak=0,
+        )
+
     # Hard time cap, checked before anything else: a position that's been open
     # its maximum allowed trading days is force-closed at the current mark
     # regardless of P&L. Callers that don't track holding time (default

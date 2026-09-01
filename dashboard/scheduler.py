@@ -17,6 +17,7 @@ from .forex_loop import (
     forex_position_management_cycle,
     forex_progress_report_cycle,
 )
+from .forex_xsmom_loop import forex_xsmom_rebalance_cycle, forex_xsmom_sync_cycle
 from .stock_loop import stock_entry_cycle, stock_position_management_cycle
 from .trading_loop import (
     EventCallback,
@@ -68,6 +69,12 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
 
     async def _forex_progress_report_job():
         await forex_progress_report_cycle(context, datetime.now(timezone.utc))
+
+    async def _forex_xsmom_rebalance_job():
+        await forex_xsmom_rebalance_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _forex_xsmom_sync_job():
+        await forex_xsmom_sync_cycle(context, datetime.now(timezone.utc), on_event)
 
     async def _breakout_entry_job():
         await breakout_entry_cycle(context, datetime.now(timezone.utc), on_event)
@@ -124,10 +131,11 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     )
 
     # "Breakout Hunter" parallel options strategy (dashboard/breakout_loop.py) —
-    # same cadence as the momentum loop, its own cycles / account / positions.
+    # its own cycles / account / positions. No 5Min job: the preset was
+    # backtested on 15Min bars, and the 60s 5Min loop fired ~17 single-factor
+    # entries in one day (2026-08-31, -$2,159). 15Min + 1H + 1Day only.
     for job, seconds, job_id in (
         (_breakout_entry_job, context.settings.scan_interval_seconds, "breakout_entry_cycle"),
-        (_breakout_entry_job_5m, context.settings.intraday_5m_scan_interval_seconds, "breakout_entry_cycle_5m"),
         (_breakout_entry_job_15m, context.settings.intraday_15m_scan_interval_seconds, "breakout_entry_cycle_15m"),
         (_breakout_entry_job_1h, context.settings.intraday_1h_scan_interval_seconds, "breakout_entry_cycle_1h"),
         (_breakout_position_job, context.settings.position_check_interval_seconds, "breakout_position_management_cycle"),
@@ -163,6 +171,16 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
         scheduler.add_job(
             _forex_loss_limit_job, IntervalTrigger(seconds=context.settings.forex_position_check_interval_seconds),
             id="forex_loss_limit_check", max_instances=1, coalesce=True,
+        )
+        # Cross-sectional 12-month momentum book: check daily whether the
+        # quarterly rebalance is due; hourly sync catches legs OANDA closed.
+        scheduler.add_job(
+            _forex_xsmom_rebalance_job, IntervalTrigger(hours=6),
+            id="forex_xsmom_rebalance", max_instances=1, coalesce=True,
+        )
+        scheduler.add_job(
+            _forex_xsmom_sync_job, IntervalTrigger(hours=1),
+            id="forex_xsmom_sync", max_instances=1, coalesce=True,
         )
         if context.progress_notifier is not None:
             for job_id, hour, minute in (("forex_progress_report_midday", 12, 0), ("forex_progress_report_close", 16, 10)):

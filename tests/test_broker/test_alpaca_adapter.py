@@ -178,6 +178,31 @@ async def test_submit_order_builds_market_order_and_maps_response():
 
 
 @pytest.mark.asyncio
+async def test_submit_order_passes_position_intent_when_set():
+    from alpaca.trading.enums import PositionIntent as AlpacaPositionIntent
+
+    from broker.models import PositionIntent
+
+    adapter, trading_client, _ = make_adapter()
+    now = datetime.now(timezone.utc)
+    trading_client.submit_order.return_value = SimpleNamespace(
+        id="order-2", symbol="AAPL260821C00150000", qty="1", side=AlpacaOrderSide.SELL,
+        type=AlpacaOrderType.LIMIT, status=AlpacaOrderStatus.NEW, filled_qty="0",
+        filled_avg_price=None, submitted_at=now, filled_at=None,
+    )
+
+    await adapter.submit_order(
+        OrderRequest(
+            symbol="AAPL260821C00150000", qty=1, side=Side.SELL, order_type=OrderType.LIMIT,
+            time_in_force=TIF.DAY, limit_price=1.23, position_intent=PositionIntent.SELL_TO_CLOSE,
+        )
+    )
+
+    sent = trading_client.submit_order.call_args[0][0]
+    assert sent.position_intent is AlpacaPositionIntent.SELL_TO_CLOSE
+
+
+@pytest.mark.asyncio
 async def test_submit_multi_leg_order_builds_mleg_request_and_maps_nested_legs():
     from broker.models import MultiLegOrderLeg, MultiLegOrderRequest, PositionIntent
 

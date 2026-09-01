@@ -67,6 +67,7 @@ def test_trade_management_defaults_match_confirmed_project_rules():
     # Reworked 2026-08-28: tight stop, scale out half at a small gain, never
     # hold past 1 trading day.
     assert settings.stop_loss_pct == pytest.approx(0.25)
+    assert settings.catastrophic_stop_pct == pytest.approx(0.50)
     assert settings.profit_target_dollars == pytest.approx(20.0)
     assert settings.trailing_stop_pct == pytest.approx(0.20)
     assert settings.min_trading_days_before_expiry == 2
@@ -85,7 +86,7 @@ def test_autonomous_trading_enabled_by_default():
 def test_forex_defaults():
     settings = Settings(_env_file=None)
     assert settings.forex_entries_enabled is True
-    assert settings.forex_take_profit_r_multiple == pytest.approx(1.0)
+    assert settings.forex_take_profit_r_multiple == pytest.approx(1.5)
     assert settings.forex_min_coverage_fraction == pytest.approx(0.6)
 
 
@@ -104,6 +105,7 @@ def test_dashboard_auth_token_unset_by_default():
     "field,value",
     [
         ("stop_loss_pct", 0.0),
+        ("catastrophic_stop_pct", 0.0),
         ("profit_target_dollars", -0.1),
         ("trailing_stop_pct", 0.0),
         ("min_trading_days_before_expiry", -1),
@@ -142,11 +144,31 @@ def test_forex_defaults():
     assert settings.forex_confidence_threshold == 85
     assert settings.forex_risk_pct_per_trade == pytest.approx(0.02)
     assert settings.forex_stop_atr_multiplier == pytest.approx(2.5)
-    assert settings.forex_take_profit_r_multiple == pytest.approx(1.0)
+    assert settings.forex_take_profit_r_multiple == pytest.approx(1.5)
     assert settings.forex_scan_interval_seconds == 300
     assert settings.forex_position_check_interval_seconds == 120
     assert settings.forex_max_positions_per_currency == 2
     assert settings.forex_entries_enabled is True
+    # cross-sectional momentum book — off by default, validated knobs
+    assert settings.forex_xsmom_enabled is False
+    assert settings.forex_xsmom_lookback_trading_days == 252
+    assert settings.forex_xsmom_rebalance_calendar_days == 91
+    assert settings.forex_xsmom_top_k == 5
+    assert settings.forex_xsmom_gross_leverage == pytest.approx(1.0)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("forex_xsmom_lookback_trading_days", 0),
+        ("forex_xsmom_rebalance_calendar_days", -1),
+        ("forex_xsmom_top_k", 0),
+        ("forex_xsmom_gross_leverage", 0.0),
+    ],
+)
+def test_rejects_invalid_xsmom_settings(field, value):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, **{field: value})
 
 
 @pytest.mark.parametrize(

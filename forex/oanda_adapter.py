@@ -153,10 +153,19 @@ class OandaAdapter:
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def submit_market_order(
-        self, pair: str, units: int, side: OrderSide, stop_loss_distance: float, take_profit_price: float
+        self,
+        pair: str,
+        units: int,
+        side: OrderSide,
+        stop_loss_distance: float | None = None,
+        take_profit_price: float | None = None,
     ) -> str:
         """units is always positive; side determines direction. Returns the
         opened trade's OANDA trade ID.
+
+        stop_loss_distance / take_profit_price are optional: the per-pair
+        technical loop attaches both, the cross-sectional momentum book
+        attaches neither (it exits only on the quarterly rebalance).
 
         stop_loss_distance is a trailing stop (trailingStopLossOnFill), not a
         fixed price -- OANDA ratchets it forward as the trade moves favorably
@@ -176,9 +185,11 @@ class OandaAdapter:
             "units": str(signed_units),
             "timeInForce": "FOK",
             "positionFill": "DEFAULT",
-            "trailingStopLossOnFill": {"distance": f"{stop_loss_distance:.{precision}f}"},
-            "takeProfitOnFill": {"price": f"{take_profit_price:.{precision}f}"},
         }
+        if stop_loss_distance is not None:
+            order["trailingStopLossOnFill"] = {"distance": f"{stop_loss_distance:.{precision}f}"}
+        if take_profit_price is not None:
+            order["takeProfitOnFill"] = {"price": f"{take_profit_price:.{precision}f}"}
         response = await self._client.post(f"/v3/accounts/{self._account_id}/orders", json={"order": order})
         response.raise_for_status()
         body = response.json()

@@ -35,6 +35,9 @@ def build_open_order_request(
             order_type=OrderType.LIMIT,
             time_in_force=time_in_force,
             limit_price=limit_price,
+            position_intent=(
+                PositionIntent.BUY_TO_OPEN if leg.side is OrderSide.BUY else PositionIntent.SELL_TO_OPEN
+            ),
         )
 
     return MultiLegOrderRequest(

@@ -29,12 +29,22 @@ class TradeManagementConfig:
     # settings.max_hold_trading_days via dashboard/context.py.
     max_hold_trading_days: int = 10**9  # force-close a position once it's been open this many trading days, regardless of P&L
     scale_out_fraction: float = 0.5  # fraction of the position to sell when profit_target_dollars is first reached
+    # Hard tail stop: close the whole position immediately (no confirmation
+    # streak) once it's down this fraction of the premium paid. The normal
+    # stop_loss_pct needs stop_loss_confirmation_count consecutive breaching
+    # checks (position_check_interval_seconds apart) before it acts — fine for
+    # filtering a noisy quote, but on a fast gap a cheap OTM option can run
+    # from -25% to worthless inside that window. Defaults effectively-disabled
+    # (1.0 = a total loss); production sets the real value from settings.
+    catastrophic_stop_pct: float = 1.0
 
     def __post_init__(self):
-        for name in ("stop_loss_pct", "profit_target_dollars", "trailing_stop_pct"):
+        for name in ("stop_loss_pct", "profit_target_dollars", "trailing_stop_pct", "catastrophic_stop_pct"):
             value = getattr(self, name)
             if value <= 0:
                 raise ValueError(f"{name} must be positive")
+        if self.catastrophic_stop_pct < self.stop_loss_pct:
+            raise ValueError("catastrophic_stop_pct must be >= stop_loss_pct")
         if self.min_trading_days_before_expiry < 0:
             raise ValueError("min_trading_days_before_expiry must be >= 0")
         if self.stop_loss_confirmation_count < 1:

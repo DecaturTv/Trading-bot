@@ -22,6 +22,13 @@ class TimeInForce(str, Enum):
     FOK = "fok"
 
 
+class PositionIntent(str, Enum):
+    BUY_TO_OPEN = "buy_to_open"
+    BUY_TO_CLOSE = "buy_to_close"
+    SELL_TO_OPEN = "sell_to_open"
+    SELL_TO_CLOSE = "sell_to_close"
+
+
 class OrderStatus(str, Enum):
     NEW = "new"
     PARTIALLY_FILLED = "partially_filled"
@@ -82,6 +89,11 @@ class OrderRequest:
     time_in_force: TimeInForce = TimeInForce.DAY
     limit_price: float | None = None
     stop_price: float | None = None
+    # For options, Alpaca treats a bare SELL on a long contract as opening a
+    # naked short ("account not eligible to trade uncovered option
+    # contracts") unless the order is tagged SELL_TO_CLOSE. Optional so
+    # equity orders, which don't use it, are unaffected.
+    position_intent: "PositionIntent | None" = None
 
 
 @dataclass(frozen=True)
@@ -131,13 +143,6 @@ class Order:
     submitted_at: datetime | None
     filled_at: datetime | None
     legs: "list[Order] | None" = None  # populated for multi-leg combo orders
-
-
-class PositionIntent(str, Enum):
-    BUY_TO_OPEN = "buy_to_open"
-    BUY_TO_CLOSE = "buy_to_close"
-    SELL_TO_OPEN = "sell_to_open"
-    SELL_TO_CLOSE = "sell_to_close"
 
 
 @dataclass(frozen=True)

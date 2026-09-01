@@ -43,8 +43,8 @@ class Settings(BaseSettings):
     # increase to the simulated bankroll (not just a rounding bump) to keep
     # new entries flowing immediately; it also means risk-per-trade is now a
     # smaller percentage of a bigger simulated account than originally tuned.
-    stock_account_start_balance: float = 2100.0
-    forex_account_start_balance: float = 300.0
+    stock_account_start_balance: float = 5000.0
+    forex_account_start_balance: float = 3000.0
     # The "Breakout Hunter" parallel options strategy's own synthetic paper
     # account (see dashboard/breakout_loop.py) — separate P&L partition, not a
     # real second brokerage account.
@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     # any position after max_hold_trading_days regardless of P&L (also
     # force-close 2 trading days before expiry).
     stop_loss_pct: float = 0.25
+    # Hard tail stop, no confirmation streak (unlike stop_loss_pct): a
+    # position down this fraction of premium is closed on the spot. Backstops
+    # the 2-cycle lag on the normal stop when an option gaps.
+    catastrophic_stop_pct: float = 0.50
     profit_target_dollars: float = 20.0
     trailing_stop_pct: float = 0.20
     min_trading_days_before_expiry: int = 2
@@ -192,13 +196,15 @@ class Settings(BaseSettings):
     forex_confidence_threshold: int = 85
     forex_risk_pct_per_trade: float = 0.02
     forex_stop_atr_multiplier: float = 2.5
-    # Lowered from 2.0 on 2026-07-25: replaying real closed trades against
-    # OANDA bid/ask history showed most of them make a real favorable move
-    # early, then reverse before reaching 2R -- 0.5R was near breakeven
-    # (-0.5R net vs -5R net at 2.0R) but on a small, correlated sample, so
-    # 1.0 is a conservative step in that direction rather than the full move.
-    # See project memory.
-    forex_take_profit_r_multiple: float = 1.0
+    # 1.5R. A 2026-09-01 sweep of the live FOREX_WEIGHTS model over 90d of H1
+    # data across 68 pairs (_scratch_forex_sweep.py) put per-trade expectancy
+    # at -0.073R (TP 1.0), -0.036R (TP 1.5, least bad), then worse out to 3.0R
+    # as the trailing stop increasingly closes trades before a far target
+    # fills. The model still loses at every TP (win rate ~34% vs ~38%
+    # break-even), so forex entries stay disabled — this is the least-bad
+    # payoff for when the entry model is replaced, not a fix. Prior note:
+    # lowered from 2.0 -> 1.0 on 2026-07-25 off a small closed-trade replay.
+    forex_take_profit_r_multiple: float = 1.5
     forex_scan_interval_seconds: int = 300
     forex_position_check_interval_seconds: int = 120
     # Minimum fraction of FOREX_WEIGHTS that must be available on a candle for
@@ -220,6 +226,20 @@ class Settings(BaseSettings):
     # against whatever's already open. Flip off to pause entries (e.g. while
     # investigating a losing strategy) without abandoning open positions.
     forex_entries_enabled: bool = True
+
+    # --- Cross-sectional FX momentum book (forex/cross_sectional.py,
+    # dashboard/forex_xsmom_loop.py). Separate strategy from the per-pair
+    # technical loop above: rank every pair by trailing ~12-month return, hold
+    # an equal-weight long/short book of the top/bottom K, rebalance
+    # quarterly. The 2026-09-01 research (10y daily, walk-forward positive,
+    # Sharpe ~0.8) that motivated it; the intraday loop above lost on every
+    # tournament preset. Disabled by default -- opt in once the live backtest
+    # (_scratch_forex_xsmom_backtest.py) reproduces the research numbers.
+    forex_xsmom_enabled: bool = False
+    forex_xsmom_lookback_trading_days: int = 252   # ~12 months, the horizon with the edge
+    forex_xsmom_rebalance_calendar_days: int = 91  # ~quarterly; hold=63 trading days in the research
+    forex_xsmom_top_k: int = 5                     # long top 5 / short bottom 5
+    forex_xsmom_gross_leverage: float = 1.0        # gross book notional = equity * this (net ~0, long/short balanced)
 
     # Congressional trade disclosures — a new decision_engine factor (see
     # DEFAULT_WEIGHTS in decision_engine/scoring.py) fed by free STOCK Act
@@ -260,7 +280,7 @@ class Settings(BaseSettings):
             raise ValueError("loss limit percentages must be in (0, 1]")
         return v
 
-    @field_validator("stop_loss_pct", "trailing_stop_pct")
+    @field_validator("stop_loss_pct", "trailing_stop_pct", "catastrophic_stop_pct")
     @classmethod
     def _validate_positive_pct(cls, v: float) -> float:
         if v <= 0:
@@ -341,9 +361,20 @@ class Settings(BaseSettings):
             raise ValueError("must be positive")
         return v
 
-    @field_validator("forex_stop_atr_multiplier", "forex_take_profit_r_multiple")
+    @field_validator("forex_stop_atr_multiplier", "forex_take_profit_r_multiple", "forex_xsmom_gross_leverage")
     @classmethod
     def _validate_positive_float(cls, v: float) -> float:
+        if v <= 0:
+            raise ValueError("must be positive")
+        return v
+
+    @field_validator(
+        "forex_xsmom_lookback_trading_days",
+        "forex_xsmom_rebalance_calendar_days",
+        "forex_xsmom_top_k",
+    )
+    @classmethod
+    def _validate_xsmom_positive_int(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("must be positive")
         return v

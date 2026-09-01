@@ -15,22 +15,21 @@ from .factors import (
 )
 from .models import FactorScore, TradeDirection, TradeSignal
 
-# Momentum-only as of 2026-08-21: a 39-config sweep (composite blends,
-# individual factors alone, several confidence thresholds) replayed against
-# 30 real days of 1Day bars for 116 symbols through a shared-$2,100-balance
-# portfolio simulation (real position-count/exposure caps, one Kelly trade
-# history) ranked momentum-only @ confidence 55 the most profitable
-# (+177% over the window). The previous multi-factor blend (momentum 0.16,
-# trend 0.20, macd 0.12, unusual_volume 0.12, gap 0.08, candlestick 0.12,
-# congress 0.20) ranked well down the list under the same test. Caveat this
-# decision was made with, and should be revisited against once more real
-# trade history exists: with only 3-13 trades per config in that sample,
-# most configs' results (including this one) were dominated by 1-2 outsized
-# single trades rather than a statistically robust edge. See project memory.
+# Trend/MACD-led as of 2026-09-01. The momentum-only weighting promoted
+# 2026-08-21 was chosen on ~30 days / 3-13 trades per config and its own
+# comment flagged that as too thin. Re-run 2026-09-01 over 2026-07-03..09-01
+# (15Min bars, 160 symbols, exits priced from real option quotes, 255+ trades
+# for the top configs) ranked this blend — the tournament's "Trend Follower"
+# preset — clearly first: +$3,904 / 66% win / avg win ~= avg loss, vs
+# momentum-only at -$87 / -4.1% (avg loss $59 vs avg win $34, the same
+# losers-dwarf-winners shape seen live). "Breakout Hunter" (gap/vol/
+# candlestick) was a strong second and already runs as its own live strategy.
+# Only the weights are promoted here; delta/DTE/Kelly/risk knobs left at their
+# separately-tuned values. See project memory + tournament/results/.
 DEFAULT_WEIGHTS = {
-    "momentum": 1.0,
-    "trend": 0.0,
-    "macd": 0.0,
+    "momentum": 0.20,
+    "trend": 0.45,
+    "macd": 0.35,
     "unusual_volume": 0.0,
     "gap": 0.0,
     "candlestick": 0.0,

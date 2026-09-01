@@ -66,6 +66,48 @@ def test_stop_loss_streak_resets_once_price_recovers():
     assert decision.stop_loss_streak == 0
 
 
+def test_catastrophic_stop_closes_immediately_without_confirmation():
+    # down 60% (200 vs 500 entry); catastrophic at -50%, confirmation would
+    # otherwise need 3 checks
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=3)
+    position = make_position(entry_cost_per_unit=500.0, stop_loss_streak=0)
+
+    decision = evaluate_exit(position, current_value_per_unit=200.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.STOP_LOSS
+    assert decision.qty_to_close == position.qty
+    assert "catastrophic" in decision.reason
+
+
+def test_catastrophic_stop_fires_even_past_max_hold():
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, max_hold_trading_days=1)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=100.0, trading_days_to_expiry=10, config=config, trading_days_held=5
+    )
+
+    assert decision.action is ExitAction.STOP_LOSS
+    assert "catastrophic" in decision.reason
+
+
+def test_normal_stop_still_waits_when_loss_below_catastrophic_threshold():
+    # down 30%: past the -25% stop but not the -50% catastrophic one, so the
+    # confirmation streak still applies
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=2)
+    position = make_position(entry_cost_per_unit=500.0, stop_loss_streak=0)
+
+    decision = evaluate_exit(position, current_value_per_unit=350.0, trading_days_to_expiry=10, config=config)
+
+    assert decision.action is ExitAction.NONE
+    assert decision.stop_loss_streak == 1
+
+
+def test_config_rejects_catastrophic_stop_below_stop_loss():
+    with pytest.raises(ValueError, match="catastrophic_stop_pct"):
+        make_config(stop_loss_pct=0.50, catastrophic_stop_pct=0.25)
+
+
 def test_no_reversal_exit_when_current_direction_matches_entry_direction():
     config = make_config(reversal_confirmation_count=1)
     position = make_position()
