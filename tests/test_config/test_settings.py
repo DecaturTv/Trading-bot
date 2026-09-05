@@ -64,14 +64,16 @@ def test_mlflow_tracking_uri_defaults_to_local_sqlite():
 
 def test_trade_management_defaults_match_confirmed_project_rules():
     settings = Settings(_env_file=None)
-    # Reworked 2026-08-28: tight stop, scale out half at a small gain, never
-    # hold past 1 trading day.
+    # Reworked 2026-09-05: profit_target_dollars/trailing_stop_pct/
+    # max_hold_trading_days rebalanced after live data showed winners were
+    # being force-closed before the scale-out/trailing-stop mechanism had
+    # room to work (see project memory on the payoff-asymmetry fix).
     assert settings.stop_loss_pct == pytest.approx(0.25)
     assert settings.catastrophic_stop_pct == pytest.approx(0.50)
-    assert settings.profit_target_dollars == pytest.approx(20.0)
-    assert settings.trailing_stop_pct == pytest.approx(0.20)
+    assert settings.profit_target_dollars == pytest.approx(60.0)
+    assert settings.trailing_stop_pct == pytest.approx(0.25)
     assert settings.min_trading_days_before_expiry == 2
-    assert settings.max_hold_trading_days == 1
+    assert settings.max_hold_trading_days == 3
     assert settings.scale_out_fraction == pytest.approx(0.5)
     assert settings.stop_loss_confirmation_count == 2
     assert settings.trailing_stop_confirmation_count == 2

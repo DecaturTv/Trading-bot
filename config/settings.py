@@ -49,6 +49,16 @@ class Settings(BaseSettings):
     # account (see dashboard/breakout_loop.py) — separate P&L partition, not a
     # real second brokerage account.
     breakout_account_start_balance: float = 5000.0
+    # Support/resistance strategy's own synthetic paper accounts (see
+    # dashboard/sr_stock_loop.py, dashboard/sr_options_loop.py) — a new,
+    # independently backtested strategy (_scratch_sr_backtest.py: +0.21R to
+    # +0.29R expectancy, stable across 9 weeks of real 5Min data) run in
+    # isolation from the momentum-based accounts above so it can prove itself
+    # live before either replacing anything or getting more capital. Smaller
+    # than the established accounts on purpose -- unproven live, proven only
+    # in backtest.
+    sr_stock_account_start_balance: float = 3000.0
+    sr_options_account_start_balance: float = 3000.0
 
     # Risk defaults
     # Lowered from 85 on 2026-08-21 to increase entry frequency (see project
@@ -117,18 +127,46 @@ class Settings(BaseSettings):
     # position and let the rest ride the 20% trailing pullback; force-close
     # any position after max_hold_trading_days regardless of P&L (also
     # force-close 2 trading days before expiry).
+    #
+    # Reworked again 2026-09-05 after 3-4 live trading days on the restarted
+    # accounts showed a structurally losing payoff: realized wins averaged
+    # ~$30, losses ~$100 (equities 4/21 win rate, breakout 0/7), even though
+    # win/loss counts alone don't explain a loss that lopsided. Root cause:
+    # a flat $20 profit_target_dollars is a hair-trigger against typical
+    # Kelly-sized positions ($150-700) -- as little as a 3% move banked half
+    # the position, and the 1-day max_hold then force-closed the "let it
+    # ride" remainder before the 20% trailing stop ever had room to capture a
+    # real move. The mechanism (scale out + trail the rest) was designed for
+    # asymmetric payoff but never actually got to run. profit_target_dollars
+    # 20->60 and trailing_stop_pct 0.20->0.25 give the remainder more room;
+    # max_hold_trading_days 1->3 is the bigger lever -- it's what was
+    # actually cutting winners off before they could develop (matches
+    # max_hold=3 trading days in the S/R backtest this was diagnosed
+    # alongside, see project memory). stop_loss_pct is unchanged: the loss
+    # side was never the demonstrated problem, the win side never got a
+    # chance to offset it.
+    #
+    # This is a mechanical rebalance, not a fix for the entry signal itself:
+    # profit_target_dollars is still a flat dollar figure that won't scale
+    # correctly across the full range of position sizes Kelly sizing
+    # produces (a "correct" fix would compare gain_pct against stop_loss_pct
+    # the same way the stop check already does, not a $ amount) -- kept as
+    # dollars here to avoid a schema change across ~25 call sites/tests on
+    # top of everything else changing this session; revisit if this
+    # rebalance alone doesn't fix live payoff.
     stop_loss_pct: float = 0.25
     # Hard tail stop, no confirmation streak (unlike stop_loss_pct): a
     # position down this fraction of premium is closed on the spot. Backstops
     # the 2-cycle lag on the normal stop when an option gaps.
     catastrophic_stop_pct: float = 0.50
-    profit_target_dollars: float = 20.0
-    trailing_stop_pct: float = 0.20
+    profit_target_dollars: float = 60.0
+    trailing_stop_pct: float = 0.25
     min_trading_days_before_expiry: int = 2
     # Hard holding-time cap: never carry a position (option or stock) longer
-    # than this many trading days. 1 = every trade is a same-/next-day
-    # directional bet; theta and multi-day drift stop mattering.
-    max_hold_trading_days: int = 1
+    # than this many trading days. Raised 1->3 on 2026-09-05 -- at 1, every
+    # position force-closed before the scale-out/trailing-stop mechanism
+    # could let a winner run past its first tiny scale-out (see above).
+    max_hold_trading_days: int = 3
     scale_out_fraction: float = 0.5
     # Require a stop-loss breach to hold for this many consecutive
     # position-check cycles (position_check_interval_seconds apart) before
@@ -175,6 +213,17 @@ class Settings(BaseSettings):
     intraday_5m_scan_interval_seconds: int = 60
     intraday_15m_scan_interval_seconds: int = 900
     intraday_1h_scan_interval_seconds: int = 3600
+
+    # Support/resistance strategy entry scan cadence (dashboard/sr_stock_loop.py,
+    # dashboard/sr_options_loop.py) — 5 minutes, matching the 5Min bars the
+    # strategy was backtested on. Deliberately NOT reusing
+    # intraday_5m_scan_interval_seconds (60s): that fast a poll relative to a
+    # 5Min bar is exactly what caused Breakout Hunter to fire ~17 same-bar
+    # entries in one day before its 5Min job was removed (see
+    # dashboard/scheduler.py) — S/R's entry condition (a level touch) doesn't
+    # change between two polls of the same still-open bar, so polling faster
+    # than the bar closes only risks reintroducing that failure mode.
+    sr_scan_interval_seconds: int = 300
 
     # Discord progress report — opt-in, only runs if a Discord webhook is
     # configured; separate from the severity-gated AlertManager channels
@@ -354,6 +403,7 @@ class Settings(BaseSettings):
         "intraday_5m_scan_interval_seconds",
         "intraday_15m_scan_interval_seconds",
         "intraday_1h_scan_interval_seconds",
+        "sr_scan_interval_seconds",
     )
     @classmethod
     def _validate_positive_int(cls, v: int) -> int:

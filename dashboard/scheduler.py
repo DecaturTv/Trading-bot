@@ -18,6 +18,18 @@ from .forex_loop import (
     forex_progress_report_cycle,
 )
 from .forex_xsmom_loop import forex_xsmom_rebalance_cycle, forex_xsmom_sync_cycle
+from .sr_options_loop import (
+    sr_options_entry_cycle,
+    sr_options_loss_limit_check_cycle,
+    sr_options_position_management_cycle,
+    sr_options_progress_report_cycle,
+)
+from .sr_stock_loop import (
+    sr_stock_entry_cycle,
+    sr_stock_loss_limit_check_cycle,
+    sr_stock_position_management_cycle,
+    sr_stock_progress_report_cycle,
+)
 from .stock_loop import stock_entry_cycle, stock_position_management_cycle
 from .trading_loop import (
     EventCallback,
@@ -97,6 +109,30 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     async def _breakout_progress_report_job():
         await breakout_progress_report_cycle(context, datetime.now(timezone.utc))
 
+    async def _sr_stock_entry_job():
+        await sr_stock_entry_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _sr_stock_position_job():
+        await sr_stock_position_management_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _sr_stock_loss_limit_job():
+        await sr_stock_loss_limit_check_cycle(context, datetime.now(timezone.utc))
+
+    async def _sr_stock_progress_report_job():
+        await sr_stock_progress_report_cycle(context, datetime.now(timezone.utc))
+
+    async def _sr_options_entry_job():
+        await sr_options_entry_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _sr_options_position_job():
+        await sr_options_position_management_cycle(context, datetime.now(timezone.utc), on_event)
+
+    async def _sr_options_loss_limit_job():
+        await sr_options_loss_limit_check_cycle(context, datetime.now(timezone.utc))
+
+    async def _sr_options_progress_report_job():
+        await sr_options_progress_report_cycle(context, datetime.now(timezone.utc))
+
     scheduler.add_job(
         _entry_job, IntervalTrigger(seconds=context.settings.scan_interval_seconds), id="entry_cycle",
         max_instances=1, coalesce=True,
@@ -143,6 +179,22 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     ):
         scheduler.add_job(job, IntervalTrigger(seconds=seconds), id=job_id, max_instances=1, coalesce=True)
 
+    # Support/resistance strategy (dashboard/sr_stock_loop.py, sr_options_loop.py)
+    # — its own cycles / accounts / positions, run isolated from the momentum
+    # model. Single sr_scan_interval_seconds entry job (5 min, matching the
+    # 5Min bars this was backtested on) for both stocks and options — no
+    # multi-timeframe fan-out like the momentum loops, this strategy was only
+    # ever backtested on one timeframe.
+    for job, seconds, job_id in (
+        (_sr_stock_entry_job, context.settings.sr_scan_interval_seconds, "sr_stock_entry_cycle"),
+        (_sr_stock_position_job, context.settings.position_check_interval_seconds, "sr_stock_position_management_cycle"),
+        (_sr_stock_loss_limit_job, context.settings.position_check_interval_seconds, "sr_stock_loss_limit_check"),
+        (_sr_options_entry_job, context.settings.sr_scan_interval_seconds, "sr_options_entry_cycle"),
+        (_sr_options_position_job, context.settings.position_check_interval_seconds, "sr_options_position_management_cycle"),
+        (_sr_options_loss_limit_job, context.settings.position_check_interval_seconds, "sr_options_loss_limit_check"),
+    ):
+        scheduler.add_job(job, IntervalTrigger(seconds=seconds), id=job_id, max_instances=1, coalesce=True)
+
     if context.progress_notifier is not None:
         # Twice per trading day: a midday check-in and one ~10 min after the
         # close with the day's final numbers. Both cycles gate on the weekday
@@ -156,6 +208,18 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
         for job_id, hour, minute in (("breakout_progress_report_midday", 12, 0), ("breakout_progress_report_close", 16, 10)):
             scheduler.add_job(
                 _breakout_progress_report_job,
+                CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone="America/New_York"),
+                id=job_id, max_instances=1, coalesce=True,
+            )
+        for job_id, hour, minute in (("sr_stock_progress_report_midday", 12, 0), ("sr_stock_progress_report_close", 16, 10)):
+            scheduler.add_job(
+                _sr_stock_progress_report_job,
+                CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone="America/New_York"),
+                id=job_id, max_instances=1, coalesce=True,
+            )
+        for job_id, hour, minute in (("sr_options_progress_report_midday", 12, 0), ("sr_options_progress_report_close", 16, 10)):
+            scheduler.add_job(
+                _sr_options_progress_report_job,
                 CronTrigger(day_of_week="mon-fri", hour=hour, minute=minute, timezone="America/New_York"),
                 id=job_id, max_instances=1, coalesce=True,
             )

@@ -45,10 +45,14 @@ from scanner.universe_repository import UniverseRepository
 from scanner.universe_schema import apply_universe_schema
 from stocks.position_repository import StockPositionRepository
 from stocks.position_schema import apply_stock_position_schema
+from stocks.sr_position_repository import SRStockPositionRepository
+from stocks.sr_position_schema import apply_sr_stock_position_schema
 from trade_management.models import TradeManagementConfig
 from trade_management.breakout_position_schema import apply_breakout_position_schema
 from trade_management.position_state_repository import PositionStateRepository
 from trade_management.position_state_schema import apply_position_state_schema
+from trade_management.sr_option_position_repository import SROptionPositionRepository
+from trade_management.sr_option_position_schema import apply_sr_option_position_schema
 
 
 @dataclass
@@ -72,6 +76,12 @@ class AppContext:
     position_repository: PositionStateRepository
     breakout_position_repository: PositionStateRepository
     stock_position_repository: StockPositionRepository
+    sr_stock_position_repository: SRStockPositionRepository
+    sr_option_position_repository: SROptionPositionRepository
+    sr_stock_kelly_sizer: KellySizer
+    sr_options_kelly_sizer: KellySizer
+    sr_stock_entry_lock: asyncio.Lock
+    sr_options_entry_lock: asyncio.Lock
     signal_confirmation_repository: SignalConfirmationRepository
     # Serializes the commit step (pre-trade check -> size -> submit order ->
     # persist position) of every equities entry -- options across all
@@ -112,6 +122,8 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     await apply_forex_position_schema(pool)
     await apply_forex_xsmom_schema(pool)
     await apply_stock_position_schema(pool)
+    await apply_sr_stock_position_schema(pool)
+    await apply_sr_option_position_schema(pool)
     await apply_congress_schema(pool)
     await apply_signal_confirmation_schema(pool)
 
@@ -142,6 +154,11 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     # shared-capital portfolio backtest this preset came from and keeps a
     # working -25% stop near -$75.
     breakout_kelly_sizer = KellySizer(kelly_fraction=0.20, fallback_fraction=0.06)
+    # Support/resistance strategy's own sizers -- unproven live (only
+    # backtested), so conservative fallback fractions matching the main
+    # equities sizer rather than anything more aggressive.
+    sr_stock_kelly_sizer = KellySizer(kelly_fraction=settings.kelly_fraction, fallback_fraction=0.08)
+    sr_options_kelly_sizer = KellySizer(kelly_fraction=0.20, fallback_fraction=0.06)
 
     halt_manager = HaltManager(HaltRepository(pool), paper_mode=settings.trading_mode == "paper")
     pre_trade_checker = PreTradeChecker(halt_manager)
@@ -163,9 +180,13 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
     position_repository = PositionStateRepository(pool)
     breakout_position_repository = PositionStateRepository(pool, table="breakout_positions")
     stock_position_repository = StockPositionRepository(pool)
+    sr_stock_position_repository = SRStockPositionRepository(pool)
+    sr_option_position_repository = SROptionPositionRepository(pool)
     signal_confirmation_repository = SignalConfirmationRepository(pool)
     equities_entry_lock = asyncio.Lock()
     breakout_entry_lock = asyncio.Lock()
+    sr_stock_entry_lock = asyncio.Lock()
+    sr_options_entry_lock = asyncio.Lock()
     trade_outcome_repository = TradeOutcomeRepository(pool)
     feature_store_repository = FeatureStoreRepository(pool)
 
@@ -209,6 +230,12 @@ async def build_context(settings: Settings, broker: BrokerAdapter | None = None)
         position_repository=position_repository,
         breakout_position_repository=breakout_position_repository,
         stock_position_repository=stock_position_repository,
+        sr_stock_position_repository=sr_stock_position_repository,
+        sr_option_position_repository=sr_option_position_repository,
+        sr_stock_kelly_sizer=sr_stock_kelly_sizer,
+        sr_options_kelly_sizer=sr_options_kelly_sizer,
+        sr_stock_entry_lock=sr_stock_entry_lock,
+        sr_options_entry_lock=sr_options_entry_lock,
         signal_confirmation_repository=signal_confirmation_repository,
         equities_entry_lock=equities_entry_lock,
         breakout_entry_lock=breakout_entry_lock,
@@ -271,4 +298,27 @@ async def get_effective_breakout_account(context: AppContext) -> Account:
     if context.settings.trading_mode == "paper":
         realized_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="breakout"))
         return replace(account, equity=context.settings.breakout_account_start_balance + realized_pnl)
+    return account
+
+
+async def get_effective_sr_stock_account(context: AppContext) -> Account:
+    """The S/R strategy's own synthetic account for direct equity positions
+    (see dashboard/sr_stock_loop.py): settings.sr_stock_account_start_balance
+    plus its realized P&L (asset_class="sr_stocks"). Unrealized P&L omitted,
+    same simplification as get_effective_breakout_account."""
+    account = await context.broker.get_account()
+    if context.settings.trading_mode == "paper":
+        realized_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="sr_stocks"))
+        return replace(account, equity=context.settings.sr_stock_account_start_balance + realized_pnl)
+    return account
+
+
+async def get_effective_sr_options_account(context: AppContext) -> Account:
+    """The S/R strategy's own synthetic account for options positions (see
+    dashboard/sr_options_loop.py): settings.sr_options_account_start_balance
+    plus its realized P&L (asset_class="sr_options")."""
+    account = await context.broker.get_account()
+    if context.settings.trading_mode == "paper":
+        realized_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="sr_options"))
+        return replace(account, equity=context.settings.sr_options_account_start_balance + realized_pnl)
     return account
