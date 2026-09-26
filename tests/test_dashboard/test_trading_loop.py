@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_position_record, make_stock_position_record
 
-from broker.models import Order, OptionContract, OptionGreeks, OptionRight, OrderSide, OrderStatus, OrderType
+from broker.models import Order, OptionContract, OptionGreeks, OptionRight, OrderSide, OrderStatus, OrderType, Position
 from dashboard.trading_loop import entry_cycle, loss_limit_check_cycle, position_management_cycle, progress_report_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 from execution.executor import OrderTimeoutError
@@ -309,6 +309,39 @@ async def test_entry_cycle_checks_exposure_against_full_qty_times_net_debit():
     args = context.pre_trade_checker.evaluate.call_args.args
     assert args[2] == "AAPL"
     assert args[3] == 4680.0
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_scopes_pre_trade_positions_to_this_sleeves_own_contract_symbols():
+    """The INTC incident: an untracked stray position (no repository owns it)
+    sat in the combined broker account with a huge market value, so summing
+    every broker.get_positions() entry blew the exposure cap for every
+    sleeve simultaneously even though none of them opened it -- see project
+    memory. Only option contract symbols this sleeve's own
+    position_repository actually tracks should reach the pre-trade checker."""
+    context = make_context()
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)])
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.5, position_fraction=0.5, used_fallback=True)
+    held_record = make_position_record(symbol="MSFT")
+    context.position_repository.get_all.return_value = [held_record]
+    tracked = Position(
+        symbol=held_record.legs[0].symbol, qty=2.0, side=OrderSide.BUY, avg_entry_price=5.0, market_value=1000.0,
+        unrealized_pl=0.0,
+    )
+    untracked = Position(
+        symbol="INTC", qty=800.0, side=OrderSide.BUY, avg_entry_price=106.13, market_value=98359.84,
+        unrealized_pl=13455.84,
+    )
+    context.broker.get_positions.return_value = [tracked, untracked]
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    positions_passed = context.pre_trade_checker.evaluate.call_args.args[1]
+    assert positions_passed == [tracked]
 
 
 @pytest.mark.asyncio

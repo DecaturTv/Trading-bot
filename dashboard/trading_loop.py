@@ -253,7 +253,14 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         # sized, committed far more capital than the cap intended (see
         # project memory on the stock-entries-blocked-by-exposure diagnosis,
         # which traced runaway exposure back to this same per-unit check).
-        positions = await context.broker.get_positions()
+        # Scoped to this sleeve's own tracked contract symbols -- see
+        # risk.pre_trade.PreTradeChecker and project memory on the INTC
+        # trade: account.equity here is this sleeve's small synthetic
+        # sub-balance, not the real combined account, so checking it against
+        # every sleeve's positions (or an untracked stray one) blows the
+        # exposure cap for a reason that has nothing to do with this sleeve.
+        held_symbols = {leg.symbol for r in await context.position_repository.get_all() for leg in r.legs}
+        positions = [p for p in await context.broker.get_positions() if p.symbol in held_symbols]
         estimated_cost = qty * strategy.net_debit
         check = await context.pre_trade_checker.evaluate(account, positions, symbol, estimated_cost)
         if not check.passed:

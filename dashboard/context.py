@@ -265,12 +265,30 @@ async def get_effective_account(context: AppContext) -> Account:
     committed to the market; marking it to market keeps position sizing,
     exposure/loss-limit checks, and the dashboard honest about the bankroll
     actually being simulated. Live trading uses the broker's real equity
-    unmodified."""
+    unmodified.
+
+    unrealized_pnl is scoped to this sleeve's own tracked positions (direct
+    stock via stock_position_repository, momentum options via
+    position_repository) rather than every broker.get_positions() entry --
+    broker.get_positions() is the combined book shared with every other
+    sleeve, so summing all of it here let another sleeve's gains/losses (or
+    an untracked stray position no repository even knows about) silently
+    inflate or deflate this sleeve's equity, which feeds straight into Kelly
+    position sizing and the exposure-check denominator. See project memory
+    on the INTC trade this fixes (its +$13k+ unrealized gain was being
+    counted here even though nothing in this sleeve opened or owns it) and
+    get_effective_breakout_account/get_effective_sr_*_account below, which
+    hit the same problem earlier and settled for dropping unrealized_pnl
+    entirely rather than solving the scoping -- this does the real fix
+    instead since both this sleeve's repositories are cheap to query."""
     account = await context.broker.get_account()
     if context.settings.trading_mode == "paper":
         realized_pnl = sum(await context.trade_outcome_repository.recent_pnls(asset_class="equities"))
+        stock_symbols = {r.symbol for r in await context.stock_position_repository.get_all()}
+        option_symbols = {leg.symbol for r in await context.position_repository.get_all() for leg in r.legs}
+        held_symbols = stock_symbols | option_symbols
         positions = await context.broker.get_positions()
-        unrealized_pnl = sum(p.unrealized_pl for p in positions)
+        unrealized_pnl = sum(p.unrealized_pl for p in positions if p.symbol in held_symbols)
         equity = context.settings.stock_account_start_balance + realized_pnl + unrealized_pnl
         return replace(account, equity=equity)
     return account

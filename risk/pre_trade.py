@@ -25,6 +25,20 @@ class PreTradeChecker:
     from broker Position data alone (same-symbol concentration, total
     exposure) — a real correlation matrix would need sector/factor reference
     data this project doesn't have yet.
+
+    `positions` must be scoped to the calling sleeve's own currently-tracked
+    book (its own position repository's symbols/legs), not the raw combined
+    account from broker.get_positions() — max_open_positions and
+    total_exposure both size their cap off `account.equity`, which is the
+    caller's own small synthetic sub-balance (see
+    dashboard/context.py:get_effective_*_account), not the real shared
+    Alpaca account. Passing the unfiltered combined book compares one
+    sleeve's virtual few-thousand-dollar equity against every sleeve's
+    positions combined, plus anything sitting in the account that no sleeve
+    is even tracking -- which is exactly what happened on 2026-08-31: an
+    orphaned INTC position no repository knew about pushed "exposure" past
+    90% for every sleeve simultaneously and froze all new entries for three
+    weeks. See project memory on the INTC trade.
     """
 
     def __init__(

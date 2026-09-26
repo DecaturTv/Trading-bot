@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_position_record
 
-from broker.models import Order, OptionContract, OptionGreeks, OptionRight, OrderSide, OrderStatus, OrderType
+from broker.models import Order, OptionContract, OptionGreeks, OptionRight, OrderSide, OrderStatus, OrderType, Position
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 from execution.executor import OrderTimeoutError
 from risk.kelly import KellyResult
@@ -87,6 +87,35 @@ async def test_entry_uses_the_breakout_model_and_threshold():
     _, _, _, threshold = context.breakout_decision_model.score.call_args.args
     assert threshold == 58.0
     context.executor.execute.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_entry_scopes_pre_trade_positions_to_this_sleeves_own_contract_symbols():
+    """This is the actual INTC incident (2026-08-31): an untracked stray
+    position (no repository owns it) sat in the combined broker account with
+    a huge market value, so summing every broker.get_positions() entry blew
+    the exposure cap for every sleeve simultaneously, including this one,
+    even though nothing here opened it -- see project memory. Only option
+    contract symbols this sleeve's own breakout_position_repository actually
+    tracks should reach the pre-trade checker."""
+    context = make_context()
+    _wire_entry(context)
+    held_record = make_position_record(symbol="MSFT")
+    context.breakout_position_repository.get_all.return_value = [held_record]
+    tracked = Position(
+        symbol=held_record.legs[0].symbol, qty=8.0, side=OrderSide.BUY, avg_entry_price=1.13, market_value=904.0,
+        unrealized_pl=0.0,
+    )
+    untracked = Position(
+        symbol="INTC", qty=800.0, side=OrderSide.BUY, avg_entry_price=106.13, market_value=98359.84,
+        unrealized_pl=13455.84,
+    )
+    context.broker.get_positions.return_value = [tracked, untracked]
+
+    await breakout_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    positions_passed = context.pre_trade_checker.evaluate.call_args.args[1]
+    assert positions_passed == [tracked]
 
 
 @pytest.mark.asyncio
