@@ -1,12 +1,14 @@
 import asyncio
 from datetime import date, datetime, timedelta, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_position_record, make_stock_position_record
 
-from broker.models import OptionContract, OptionGreeks, OptionRight
+from broker.models import Order, OptionContract, OptionGreeks, OptionRight, OrderSide, OrderStatus, OrderType
 from dashboard.trading_loop import entry_cycle, loss_limit_check_cycle, position_management_cycle, progress_report_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
+from execution.executor import OrderTimeoutError
 from risk.kelly import KellyResult
 from trade_management.models import TradeManagementConfig
 
@@ -501,6 +503,39 @@ async def test_position_management_cycle_full_exit_deletes_position_and_records_
     context.alert_manager.send.assert_awaited_once()
     assert events[0]["type"] == "position_closed"
     assert events[0]["action"] == "stop_loss"
+
+
+@pytest.mark.asyncio
+async def test_position_management_cycle_does_not_record_outcome_when_close_order_never_fills():
+    """The INTC incident: build_close_order_request's sell was accepted by
+    the broker but never actually filled. Recording an outcome and deleting
+    the tracked position anyway is exactly the bug that let those calls ride
+    untracked for 18 days into an assignment -- see project memory. The
+    position must stay tracked so the next cycle re-evaluates and retries."""
+    context = make_context()
+    record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY)
+    leg_symbol = record.legs[0].symbol
+    context.position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=0.5, ask=0.6, last_price=0.55, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.1, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+    # Replaces the fixture's default "assume filled" stub outright -- setting
+    # .return_value alone wouldn't override the .side_effect already set there.
+    context.executor.await_fill = AsyncMock(return_value=Order(
+        order_id="order-1", symbol=leg_symbol, qty=2, side=OrderSide.SELL, order_type=OrderType.LIMIT,
+        status=OrderStatus.EXPIRED, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,
+    ))
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.position_repository.delete.assert_not_awaited()
+    context.position_repository.upsert.assert_not_awaited()
 
 
 @pytest.mark.asyncio

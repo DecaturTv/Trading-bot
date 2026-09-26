@@ -32,6 +32,7 @@ from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
 from stocks.sr_models import OpenSRStockPositionRecord, SRStockPositionState
+from trade_management.close_confirmation import confirm_close_fill
 from trade_management.expiry import trading_days_until
 from trade_management.sr_exit_rules import BACKTESTED_SR_EXIT_CONFIG, SRExitAction, evaluate_sr_exit
 from utils.time import is_equity_market_open, is_us_market_weekday
@@ -195,9 +196,19 @@ async def _manage_position(context: AppContext, record: OpenSRStockPositionRecor
         )
     )
 
-    pnl = (current_price - record.state.entry_price) * record.state.qty
+    fill = await confirm_close_fill(context.executor, context.broker, order.order_id, record.symbol)
+    if not fill.filled:
+        return  # position stays tracked as-is; next cycle re-evaluates and retries
+
+    pnl = (current_price - record.state.entry_price) * fill.filled_qty
     await context.trade_outcome_repository.record_outcome(record.symbol, now, pnl, asset_class=_ASSET_CLASS)
-    await context.sr_stock_position_repository.delete(record.symbol)
+
+    remaining = record.state.qty - fill.filled_qty
+    if remaining <= 0:
+        await context.sr_stock_position_repository.delete(record.symbol)
+    else:
+        updated_state = replace(record.state, qty=remaining)
+        await context.sr_stock_position_repository.upsert(replace(record, state=updated_state), updated_at=now)
 
     severity = Severity.WARNING if decision.action is SRExitAction.STOP_LOSS else Severity.INFO
     await context.alert_manager.send(

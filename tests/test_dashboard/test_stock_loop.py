@@ -1,4 +1,5 @@
 from datetime import date, datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_position_record, make_stock_position_record
@@ -7,6 +8,7 @@ from broker.models import Order, OrderSide, OrderStatus, OrderType, Quote
 from dashboard.stock_loop import stock_entry_cycle, stock_position_management_cycle
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 from decision_engine.signal_confirmation_repository import SignalConfirmationState
+from execution.executor import OrderTimeoutError
 from risk.kelly import KellyResult
 from trade_management.models import TradeManagementConfig
 
@@ -370,6 +372,50 @@ async def test_position_management_closes_full_position_on_stop_loss():
     context.stock_position_repository.delete.assert_awaited_once_with("AAPL")
     assert events[0]["type"] == "stock_position_closed"
     assert events[0]["action"] == "stop_loss"
+
+
+@pytest.mark.asyncio
+async def test_position_management_does_not_record_outcome_when_close_order_never_fills():
+    """The INTC incident: a close order is submitted and accepted by the
+    broker but never actually fills (ends EXPIRED/CANCELED/REJECTED instead
+    of FILLED). Recording an outcome and deleting the tracked position here
+    anyway is exactly the bug that let 8 long calls ride untracked for 18
+    days into an assignment. The position must stay tracked so the next
+    cycle re-evaluates and retries the close."""
+    context = make_context()
+    record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0)
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=45.0)  # -55%, breaches -50% stop
+    context.broker.submit_order.return_value = make_order(qty=10, side=OrderSide.SELL)
+    # Replaces the fixture's default "assume filled" stub outright -- setting
+    # .return_value alone wouldn't override the .side_effect already set there.
+    context.executor.await_fill = AsyncMock(return_value=Order(
+        order_id="order-1", symbol="AAPL", qty=10, side=OrderSide.SELL, order_type=OrderType.LIMIT,
+        status=OrderStatus.EXPIRED, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,
+    ))
+
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.stock_position_repository.delete.assert_not_awaited()
+    context.stock_position_repository.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_position_management_cancels_and_retries_when_close_order_times_out():
+    context = make_context()
+    record = make_stock_position_record(symbol="AAPL", qty=10, entry_cost=100.0)
+    context.stock_position_repository.get_all.return_value = [record]
+    context.broker.get_latest_quote.return_value = make_quote(bid=45.0)  # -55%, breaches -50% stop
+    context.broker.submit_order.return_value = make_order(qty=10, side=OrderSide.SELL)
+    context.executor.await_fill.side_effect = OrderTimeoutError("order-1 did not reach a terminal status")
+
+    await stock_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.cancel_order.assert_awaited_once_with("order-1")
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.stock_position_repository.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio

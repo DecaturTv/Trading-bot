@@ -36,6 +36,7 @@ from options.strategy_builders import MIN_TRADEABLE_CONTRACT_COST, build_long_ca
 from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
+from trade_management.close_confirmation import confirm_close_fill
 from trade_management.close_order_builder import build_close_order_request
 from trade_management.exit_rules import evaluate_exit
 from trade_management.expiry import trading_days_until
@@ -326,14 +327,18 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
 
     close_request = build_close_order_request(strategy, decision.qty_to_close, current_contracts)
     if isinstance(close_request, MultiLegOrderRequest):
-        await context.broker.submit_multi_leg_order(close_request)
+        order = await context.broker.submit_multi_leg_order(close_request)
     else:
-        await context.broker.submit_order(close_request)
+        order = await context.broker.submit_order(close_request)
 
-    pnl = (current_value - record.state.entry_cost_per_unit) * decision.qty_to_close
+    fill = await confirm_close_fill(context.executor, context.broker, order.order_id, record.symbol)
+    if not fill.filled:
+        return  # position stays tracked as-is; next cycle re-evaluates and retries
+
+    pnl = (current_value - record.state.entry_cost_per_unit) * fill.filled_qty
     await context.trade_outcome_repository.record_outcome(record.symbol, now, pnl, asset_class=_ASSET_CLASS)
 
-    remaining = record.state.qty - decision.qty_to_close
+    remaining = record.state.qty - fill.filled_qty
     if remaining <= 0:
         await context.breakout_position_repository.delete(record.symbol)
     else:

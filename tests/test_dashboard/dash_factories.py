@@ -2,7 +2,7 @@ import asyncio
 from datetime import date, datetime, timedelta, timezone
 from unittest.mock import AsyncMock, MagicMock
 
-from broker.models import Account, Bar, OptionRight, OrderSide
+from broker.models import Account, Bar, Order, OptionRight, OrderSide, OrderStatus, OrderType
 from dashboard.context import AppContext
 from decision_engine.models import TradeDirection
 from forex.models import OpenForexPosition
@@ -134,6 +134,34 @@ def make_context(**overrides) -> AppContext:
     ctx.halt_manager = AsyncMock()
     ctx.halt_manager.is_halted.return_value = False
     ctx.executor = AsyncMock()
+
+    # confirm_close_fill() (trade_management/close_confirmation.py) polls
+    # ctx.executor.await_fill(order_id) after every close order before a
+    # management-cycle test's pnl/repository assertions can fire. Default it
+    # to "whatever was just submitted filled completely" by reading the qty
+    # off the OrderRequest/MultiLegOrderRequest the code under test actually
+    # passed to submit_order/submit_multi_leg_order, rather than requiring
+    # every close test to hand-build a matching filled Order. Tests
+    # exercising a stuck/rejected close override
+    # ctx.executor.await_fill directly.
+    async def _default_await_fill(order_id):
+        for mock in (ctx.broker.submit_order, ctx.broker.submit_multi_leg_order):
+            if mock.await_count and mock.call_args is not None:
+                request = mock.call_args.args[0]
+                qty = getattr(request, "qty", None)
+                if qty:
+                    return Order(
+                        order_id=order_id, symbol=getattr(request, "symbol", ""), qty=qty,
+                        side=getattr(request, "side", OrderSide.SELL), order_type=OrderType.LIMIT,
+                        status=OrderStatus.FILLED, filled_qty=qty, filled_avg_price=None,
+                        submitted_at=None, filled_at=None,
+                    )
+        return Order(
+            order_id=order_id, symbol="", qty=0, side=OrderSide.SELL, order_type=OrderType.LIMIT,
+            status=OrderStatus.FILLED, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,
+        )
+
+    ctx.executor.await_fill = AsyncMock(side_effect=_default_await_fill)
     ctx.trade_management_config = TradeManagementConfig(
         stop_loss_pct=0.50, profit_target_dollars=100000.0,
         trailing_stop_pct=0.20, min_trading_days_before_expiry=2, stop_loss_confirmation_count=1,

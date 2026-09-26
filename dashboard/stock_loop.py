@@ -12,6 +12,7 @@ from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
 from stocks.models import OpenStockPositionRecord
+from trade_management.close_confirmation import confirm_close_fill
 from trade_management.exit_rules import evaluate_exit
 from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, PositionState
@@ -254,10 +255,14 @@ async def _manage_stock_position(context: AppContext, record: OpenStockPositionR
         )
     )
 
-    pnl = (current_value - record.state.entry_cost_per_unit) * decision.qty_to_close
+    fill = await confirm_close_fill(context.executor, context.broker, order.order_id, record.symbol)
+    if not fill.filled:
+        return  # position stays tracked as-is; next cycle re-evaluates and retries
+
+    pnl = (current_value - record.state.entry_cost_per_unit) * fill.filled_qty
     await context.trade_outcome_repository.record_outcome(record.symbol, now, pnl, asset_class="equities")
 
-    remaining = record.state.qty - decision.qty_to_close
+    remaining = record.state.qty - fill.filled_qty
     if remaining <= 0:
         await context.stock_position_repository.delete(record.symbol)
     else:

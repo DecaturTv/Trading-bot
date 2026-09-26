@@ -1,10 +1,12 @@
 from datetime import date, datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 from dash_factories import make_account, make_bars, make_context, make_position_record
 
-from broker.models import OptionContract, OptionGreeks, OptionRight
+from broker.models import Order, OptionContract, OptionGreeks, OptionRight, OrderSide, OrderStatus, OrderType
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
+from execution.executor import OrderTimeoutError
 from risk.kelly import KellyResult
 
 from dashboard.breakout_loop import (
@@ -117,6 +119,70 @@ async def test_exit_records_outcome_under_breakout_asset_class():
     context.trade_outcome_repository.record_outcome.assert_awaited_once()
     assert context.trade_outcome_repository.record_outcome.await_args.kwargs["asset_class"] == "breakout"
     context.breakout_position_repository.delete.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_exit_does_not_record_outcome_or_untrack_when_close_order_never_fills():
+    """This is the actual INTC incident (2026-08-31): an 8-contract long
+    call's closing sell order was accepted by Alpaca but never filled. The
+    old code recorded a P&L and deleted the tracked position anyway, so the
+    contracts sat completely untracked until they were auto-exercised into
+    800 shares 18 days later. The position must stay tracked here so the
+    next management cycle re-evaluates and retries the close instead."""
+    context = make_context()
+    record = make_position_record(symbol="AAPL", qty=8, entry_cost=113.0, expiration=EXPIRY)
+    leg_symbol = record.legs[0].symbol
+    context.breakout_position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=0.5, ask=0.6, last_price=0.55, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.1, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+    context.broker.submit_order.return_value = Order(
+        order_id="order-1", symbol=leg_symbol, qty=8, side=OrderSide.SELL, order_type=OrderType.LIMIT,
+        status=OrderStatus.NEW, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,
+    )
+    # Replaces the fixture's default "assume filled" stub outright -- setting
+    # .return_value alone wouldn't override the .side_effect already set there.
+    context.executor.await_fill = AsyncMock(return_value=Order(
+        order_id="order-1", symbol=leg_symbol, qty=8, side=OrderSide.SELL, order_type=OrderType.LIMIT,
+        status=OrderStatus.EXPIRED, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,
+    ))
+
+    await breakout_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.breakout_position_repository.delete.assert_not_awaited()
+    context.breakout_position_repository.upsert.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_exit_cancels_and_retries_when_close_order_times_out():
+    context = make_context()
+    record = make_position_record(symbol="AAPL", qty=8, entry_cost=113.0, expiration=EXPIRY)
+    leg_symbol = record.legs[0].symbol
+    context.breakout_position_repository.get_all.return_value = [record]
+    context.broker.get_option_chain.return_value = [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=0.5, ask=0.6, last_price=0.55, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.1, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+    context.broker.submit_order.return_value = Order(
+        order_id="order-1", symbol=leg_symbol, qty=8, side=OrderSide.SELL, order_type=OrderType.LIMIT,
+        status=OrderStatus.NEW, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,
+    )
+    context.executor.await_fill.side_effect = OrderTimeoutError("order-1 did not reach a terminal status")
+
+    await breakout_position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.cancel_order.assert_awaited_once_with("order-1")
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()
+    context.breakout_position_repository.delete.assert_not_awaited()
 
 
 @pytest.mark.asyncio
