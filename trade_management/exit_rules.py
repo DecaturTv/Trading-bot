@@ -12,6 +12,7 @@ def evaluate_exit(
     current_direction: TradeDirection | None = None,
     entry_direction: TradeDirection | None = None,
     trading_days_held: int = 0,
+    current_confidence: float | None = None,
 ) -> ExitDecision:
     """Pure decision function — evaluates one snapshot in time. Peak-gain
     tracking for the trailing stop, and the stop-loss/reversal/trailing-stop
@@ -28,9 +29,17 @@ def evaluate_exit(
     compute a fresh signal this cycle.
 
     trading_days_held is how many trading days the position has been open;
-    once it reaches config.max_hold_trading_days the position is force-closed
-    (MAX_HOLD_EXIT), ahead of every other rule. Callers that don't track it
-    leave the default 0 and the cap never fires.
+    once it reaches config.max_hold_trading_days the position is normally
+    force-closed (MAX_HOLD_EXIT) ahead of every other rule. current_confidence
+    (the same freshly re-scored signal current_direction comes from) can
+    override that one check: if config.conviction_hold_confidence_floor is
+    set and current_confidence still clears it with current_direction still
+    agreeing with entry_direction, the cap is skipped for this cycle and
+    every other rule below evaluates normally instead -- a position stays
+    open past the calendar cap only for as long as the model's own read on it
+    keeps saying so, not on a blind timer. Callers that don't track
+    trading_days_held/current_confidence leave the defaults and get the
+    original unconditional-cutoff behavior.
     """
     gain_pct = unrealized_gain_pct(position.entry_cost_per_unit, current_value_per_unit)
 
@@ -54,17 +63,31 @@ def evaluate_exit(
 
     # Hard time cap, checked before anything else: a position that's been open
     # its maximum allowed trading days is force-closed at the current mark
-    # regardless of P&L. Callers that don't track holding time (default
-    # trading_days_held=0) never trip this.
+    # regardless of P&L -- unless conviction_hold_confidence_floor is set and
+    # the model still likes this trade at least as much as it did going in,
+    # in which case the cap is skipped this cycle and every rule below still
+    # applies (stop-loss/reversal/expiry can still close it same as always;
+    # conviction only earns a reprieve from the calendar, nothing else).
+    # Callers that don't track holding time (default trading_days_held=0)
+    # never trip this either way.
     if trading_days_held >= config.max_hold_trading_days:
-        return ExitDecision(
-            action=ExitAction.MAX_HOLD_EXIT,
-            qty_to_close=position.qty,
-            reason=f"held {trading_days_held} trading day(s) >= max {config.max_hold_trading_days}",
-            stop_loss_streak=0,
-            reversal_streak=0,
-            trailing_stop_streak=0,
+        holding_on_conviction = (
+            config.conviction_hold_confidence_floor is not None
+            and current_confidence is not None
+            and current_confidence >= config.conviction_hold_confidence_floor
+            and current_direction is not None
+            and entry_direction is not None
+            and current_direction is entry_direction
         )
+        if not holding_on_conviction:
+            return ExitDecision(
+                action=ExitAction.MAX_HOLD_EXIT,
+                qty_to_close=position.qty,
+                reason=f"held {trading_days_held} trading day(s) >= max {config.max_hold_trading_days}",
+                stop_loss_streak=0,
+                reversal_streak=0,
+                trailing_stop_streak=0,
+            )
 
     if trading_days_to_expiry <= config.min_trading_days_before_expiry:
         return ExitDecision(

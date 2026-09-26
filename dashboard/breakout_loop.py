@@ -270,13 +270,20 @@ async def breakout_position_management_cycle(context: AppContext, now: datetime,
             logger.exception("breakout position management failed for %s", record.symbol)
 
 
-async def _current_signal_direction(context: AppContext, symbol: str, now: datetime) -> TradeDirection | None:
-    """Breakout's reversal-exit re-score — same shape as trading_loop's, but
-    against the breakout model / threshold."""
+async def _current_signal(context: AppContext, symbol: str, now: datetime) -> tuple[TradeDirection | None, float | None]:
+    """Breakout's reversal-exit / conviction-hold re-score — same shape as
+    trading_loop's, but against the breakout model / threshold. Returns
+    (direction, confidence): direction feeds the reversal-exit check same as
+    before; confidence feeds evaluate_exit's conviction-hold override (see
+    TradeManagementConfig.conviction_hold_confidence_floor) so a position can
+    outlive max_hold_trading_days for as long as this re-score keeps liking
+    it, instead of on a blind calendar cutoff. (None, None) means the caller
+    couldn't re-score this cycle (insufficient bar history) -- both checks
+    treat that as "no fresh read," not as license to hold or reason to exit."""
     await context.ingestion_service.ingest_incremental(symbol, "1Day", end=now)
     bars = await context.bars_repository.get_bars(symbol, "1Day", now - timedelta(days=_BARS_LOOKBACK_DAYS), now)
     if len(bars) < _MIN_BARS_FOR_SIGNAL:
-        return None
+        return None, None
     scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, bars)) is not None]
     congress_trades = await context.congress_trade_manager.get_recent_trades(
         symbol, now, lookback_days=context.settings.congress_lookback_days
@@ -285,7 +292,9 @@ async def _current_signal_direction(context: AppContext, symbol: str, now: datet
         symbol, bars, scan_hits, _CONFIDENCE_THRESHOLD,
         congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
     )
-    return signal.direction if signal.meets_threshold else TradeDirection.NEUTRAL
+    if not signal.meets_threshold:
+        return TradeDirection.NEUTRAL, signal.confidence
+    return signal.direction, signal.confidence
 
 
 async def _manage_position(context: AppContext, record: OpenPositionRecord, now: datetime, on_event: EventCallback) -> None:
@@ -305,12 +314,13 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
     current_value = compute_current_value_per_unit(strategy, current_contracts)
     nearest_expiration = min(leg.expiration for leg in record.legs)
     dte = trading_days_until(nearest_expiration, now.date())
-    current_direction = await _current_signal_direction(context, record.symbol, now)
+    current_direction, current_confidence = await _current_signal(context, record.symbol, now)
 
     decision = evaluate_exit(
         record.state, current_value, dte, context.trade_management_config,
         current_direction=current_direction, entry_direction=record.direction,
         trading_days_held=trading_days_until(now.date(), record.entry_date),
+        current_confidence=current_confidence,
     )
     if decision.action is ExitAction.NONE:
         if (

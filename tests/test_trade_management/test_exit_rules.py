@@ -277,6 +277,73 @@ def test_max_hold_exit_does_not_fire_before_the_cap():
     assert decision.action is ExitAction.NONE
 
 
+def test_max_hold_exit_skipped_when_conviction_still_holds():
+    config = make_config(max_hold_trading_days=1, conviction_hold_confidence_floor=60.0)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=505.0, trading_days_to_expiry=10, config=config, trading_days_held=1,
+        current_direction=TradeDirection.BULLISH, entry_direction=TradeDirection.BULLISH, current_confidence=75.0,
+    )
+
+    assert decision.action is ExitAction.NONE
+
+
+def test_max_hold_exit_fires_when_conviction_has_faded_below_the_floor():
+    config = make_config(max_hold_trading_days=1, conviction_hold_confidence_floor=60.0)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=505.0, trading_days_to_expiry=10, config=config, trading_days_held=1,
+        current_direction=TradeDirection.BULLISH, entry_direction=TradeDirection.BULLISH, current_confidence=59.9,
+    )
+
+    assert decision.action is ExitAction.MAX_HOLD_EXIT
+
+
+def test_max_hold_exit_fires_on_conviction_hold_even_if_direction_flipped():
+    # A held position that's reversed shouldn't get a conviction reprieve --
+    # the reversal-exit path (with its own confirmation streak) owns that
+    # case, not this one.
+    config = make_config(max_hold_trading_days=1, conviction_hold_confidence_floor=60.0)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=505.0, trading_days_to_expiry=10, config=config, trading_days_held=1,
+        current_direction=TradeDirection.BEARISH, entry_direction=TradeDirection.BULLISH, current_confidence=99.0,
+    )
+
+    assert decision.action is ExitAction.MAX_HOLD_EXIT
+
+
+def test_max_hold_exit_fires_when_conviction_hold_configured_but_no_fresh_signal_available():
+    # Caller couldn't re-score this cycle (e.g. insufficient bar history) --
+    # without a fresh confidence reading there's nothing to hold on, so the
+    # calendar cap applies exactly as it would with no floor configured.
+    config = make_config(max_hold_trading_days=1, conviction_hold_confidence_floor=60.0)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=505.0, trading_days_to_expiry=10, config=config, trading_days_held=1,
+    )
+
+    assert decision.action is ExitAction.MAX_HOLD_EXIT
+
+
+def test_max_hold_exit_conviction_reprieve_still_yields_to_stop_loss():
+    # Conviction only buys an exemption from the calendar cap -- a real
+    # stop-loss breach still closes the position the same cycle.
+    config = make_config(max_hold_trading_days=1, stop_loss_pct=0.50, conviction_hold_confidence_floor=60.0)
+    position = make_position(entry_cost_per_unit=500.0)
+
+    decision = evaluate_exit(
+        position, current_value_per_unit=200.0, trading_days_to_expiry=10, config=config, trading_days_held=1,
+        current_direction=TradeDirection.BULLISH, entry_direction=TradeDirection.BULLISH, current_confidence=99.0,
+    )
+
+    assert decision.action is ExitAction.STOP_LOSS
+
+
 def test_profit_target_does_not_trigger_below_dollar_gain():
     config = make_config(profit_target_dollars=50.0)
     position = make_position(qty=4, entry_cost_per_unit=500.0, scaled_out=False)
@@ -416,3 +483,14 @@ def test_config_rejects_max_hold_trading_days_below_one():
 def test_config_rejects_scale_out_fraction_outside_open_unit_interval(bad):
     with pytest.raises(ValueError):
         make_config(scale_out_fraction=bad)
+
+
+@pytest.mark.parametrize("bad", [0.0, -1.0])
+def test_config_rejects_non_positive_conviction_hold_confidence_floor(bad):
+    with pytest.raises(ValueError):
+        make_config(conviction_hold_confidence_floor=bad)
+
+
+def test_config_allows_conviction_hold_confidence_floor_unset():
+    config = make_config(conviction_hold_confidence_floor=None)
+    assert config.conviction_hold_confidence_floor is None

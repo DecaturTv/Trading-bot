@@ -236,11 +236,13 @@ def _equities_backtest_setup(strategy: Strategy, bankroll: float):
         stop_loss_confirmation_count=2,
         reversal_confirmation_count=SIGNAL_CONFIRMATION_COUNT,
         trailing_stop_confirmation_count=2,
-        # Shared 2026-08-28 risk baseline — the same values the live config
-        # runs (config.settings): never hold past 1 trading day, scale out
-        # half at the profit target. All four strategies compete under this.
-        max_hold_trading_days=1,
-        scale_out_fraction=0.5,
+        # Per-strategy (see EquityKnobs) so a competitor can test a different
+        # hold-time shape; defaults to the 2026-08-28 shared baseline (never
+        # hold past 1 trading day, scale out half at the profit target) that
+        # the original four strategies all still run under unchanged.
+        max_hold_trading_days=strategy.equities.max_hold_trading_days,
+        scale_out_fraction=strategy.equities.scale_out_fraction,
+        conviction_hold_confidence_floor=strategy.equities.conviction_hold_confidence_floor,
     )
     config = BacktestConfig(
         starting_equity=bankroll,

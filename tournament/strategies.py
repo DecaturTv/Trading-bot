@@ -12,11 +12,14 @@ engine passes disclosure data to WeightedFactorModel.score(), so a congress
 weight would always be dropped-and-renormalized to nothing. Competing on a
 factor that can't be scored here would just be noise.
 
-All four strategies share the 2026-08-28 risk baseline — -25% stop, scale out
-half at +$20, 20% trailing on the remainder, force-close after 1 trading day
-(the runner sets max_hold/scale_out; stop/target/trail are pinned equal in
-every EquityKnobs below). The contest is purely which factor mix, delta, DTE,
-and Kelly fraction earn the most under those fixed rules.
+The original four strategies share the 2026-08-28 risk baseline — -25% stop,
+scale out half at +$20, 20% trailing on the remainder, force-close after 1
+trading day (EquityKnobs.max_hold_trading_days/scale_out_fraction default to
+that baseline so they need no explicit setting below). Among those four the
+contest is purely which factor mix, delta, DTE, and Kelly fraction earn the
+most under identical exit rules. Breakout Hunter — Let It Ride overrides the
+hold-time shape instead, to answer a different question (see its own
+docstring below).
 """
 
 from dataclasses import dataclass
@@ -33,6 +36,21 @@ class EquityKnobs:
     profit_target_dollars: float
     trailing_stop_pct: float
     kelly_fraction: float
+    # Hold-time/scale-out shape. Defaulted to the 2026-08-28 shared baseline
+    # (force-close after 1 trading day, scale out half at the profit target)
+    # so the four original strategies below need no changes -- override on a
+    # new competitor to test a different hold-time shape, e.g. Breakout
+    # Hunter — Let It Ride below, which tests riding a winner toward
+    # expiration instead of forcing a same-day exit (see project memory on
+    # the INTC trade that raised the question).
+    max_hold_trading_days: int = 1
+    scale_out_fraction: float = 0.5
+    # None (default): the calendar cap above is unconditional, same as every
+    # original strategy. Set it to let a position outlive the cap for as long
+    # as a fresh re-score of the same signal still meets this confidence
+    # floor and still agrees with the entry direction -- see
+    # trade_management.models.TradeManagementConfig.conviction_hold_confidence_floor.
+    conviction_hold_confidence_floor: float | None = None
 
 
 @dataclass(frozen=True)
@@ -164,7 +182,81 @@ BREAKOUT_HUNTER = Strategy(
     ),
 )
 
-STRATEGIES: list[Strategy] = [MOMENTUM_RIDER, BALANCED_BLEND, TREND_FOLLOWER, BREAKOUT_HUNTER]
+BREAKOUT_HUNTER_LET_IT_RIDE = Strategy(
+    name="Breakout Hunter — Let It Ride",
+    blurb="Same signal, delta, DTE, and Kelly fraction as Breakout Hunter -- "
+    "isolates one question: does riding a winner toward expiration beat "
+    "forcing a same-day exit? Prompted by the INTC breakout call "
+    "(2026-08-31) that a close-order bug accidentally let ride 18 days into "
+    "an option assignment for +$13,455 -- see project memory. profit_target_"
+    "dollars is set far out of reach so the $20 scale-out never fires, and "
+    "max_hold_trading_days is stretched to the DTE window instead of forcing "
+    "a same-day close; the -25% stop and reversal-exit are unchanged, so a "
+    "loser still gets cut early -- only a winner's hold time changes.",
+    weights=BREAKOUT_HUNTER.weights,
+    min_coverage=BREAKOUT_HUNTER.min_coverage,
+    equities=EquityKnobs(
+        confidence_threshold=BREAKOUT_HUNTER.equities.confidence_threshold,
+        target_delta=BREAKOUT_HUNTER.equities.target_delta,
+        target_dte=BREAKOUT_HUNTER.equities.target_dte,
+        stop_loss_pct=BREAKOUT_HUNTER.equities.stop_loss_pct,
+        # Effectively disabled: at this sizing (bankroll x 0.20 Kelly
+        # fraction, single-digit contracts) a real dollar_gain never reaches
+        # 7 figures, so the position never scales out early -- it rides
+        # under the stop-loss/reversal/max-hold rules alone.
+        profit_target_dollars=1_000_000.0,
+        trailing_stop_pct=BREAKOUT_HUNTER.equities.trailing_stop_pct,
+        kelly_fraction=BREAKOUT_HUNTER.equities.kelly_fraction,
+        # ~20 calendar-day DTE is ~14 trading days; min_trading_days_before_
+        # expiry=2 (set by the runner for every strategy) force-closes 2
+        # trading days ahead of that regardless, so this is a generous
+        # backstop rather than the binding constraint.
+        max_hold_trading_days=14,
+        scale_out_fraction=BREAKOUT_HUNTER.equities.scale_out_fraction,
+    ),
+    forex=BREAKOUT_HUNTER.forex,
+)
+
+BREAKOUT_HUNTER_CONVICTION_HOLD = Strategy(
+    name="Breakout Hunter — Conviction Hold",
+    blurb="Same signal, delta, DTE, Kelly fraction, and $20/0.20 profit-"
+    "target/trailing-stop as Breakout Hunter -- the only difference is what "
+    "happens once max_hold_trading_days (1) is reached. Instead of Let It "
+    "Ride's blind calendar extension, the position is re-scored against the "
+    "live model every single day it's held past that point: it only keeps "
+    "riding for as long as that fresh score still clears the entry "
+    "confidence floor AND still agrees with the direction it was opened on; "
+    "the moment either fails, it's force-closed that same cycle, same as the "
+    "1-day baseline would have done on day 1. A real stop-loss or a "
+    "confirmed reversal still closes it regardless, exactly as in every "
+    "other strategy here. This is the mechanism -- 'keep analyzing while "
+    "we're in the trade, don't just fix a hold-time number' -- the INTC "
+    "trade actually raised; Let It Ride is the naive version kept alongside "
+    "it for comparison.",
+    weights=BREAKOUT_HUNTER.weights,
+    min_coverage=BREAKOUT_HUNTER.min_coverage,
+    equities=EquityKnobs(
+        confidence_threshold=BREAKOUT_HUNTER.equities.confidence_threshold,
+        target_delta=BREAKOUT_HUNTER.equities.target_delta,
+        target_dte=BREAKOUT_HUNTER.equities.target_dte,
+        stop_loss_pct=BREAKOUT_HUNTER.equities.stop_loss_pct,
+        profit_target_dollars=BREAKOUT_HUNTER.equities.profit_target_dollars,
+        trailing_stop_pct=BREAKOUT_HUNTER.equities.trailing_stop_pct,
+        kelly_fraction=BREAKOUT_HUNTER.equities.kelly_fraction,
+        max_hold_trading_days=BREAKOUT_HUNTER.equities.max_hold_trading_days,  # 1 -- same baseline cap
+        scale_out_fraction=BREAKOUT_HUNTER.equities.scale_out_fraction,
+        # Same bar the entry model itself requires to open a position in the
+        # first place -- "keep holding for as long as this would still
+        # qualify as a fresh entry," not a looser or stricter bar.
+        conviction_hold_confidence_floor=BREAKOUT_HUNTER.equities.confidence_threshold,
+    ),
+    forex=BREAKOUT_HUNTER.forex,
+)
+
+STRATEGIES: list[Strategy] = [
+    MOMENTUM_RIDER, BALANCED_BLEND, TREND_FOLLOWER, BREAKOUT_HUNTER,
+    BREAKOUT_HUNTER_LET_IT_RIDE, BREAKOUT_HUNTER_CONVICTION_HOLD,
+]
 
 
 def by_name(name: str) -> Strategy:

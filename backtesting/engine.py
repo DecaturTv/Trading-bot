@@ -96,7 +96,7 @@ class BacktestEngine:
 
             if open_position is not None:
                 equity, open_position = self._process_open_position(
-                    symbol, open_position, current_bar, as_of, vol, equity, trades
+                    symbol, window, open_position, current_bar, as_of, vol, equity, trades
                 )
                 if open_position is None:
                     equity_curve.append(equity)
@@ -124,7 +124,7 @@ class BacktestEngine:
             entries_skipped_no_quote=entries_skipped_no_quote,
         )
 
-    def _process_open_position(self, symbol, open_position, current_bar, as_of, vol, equity, trades):
+    def _process_open_position(self, symbol, window, open_position, current_bar, as_of, vol, equity, trades):
         mark = self._quotes.mark(open_position.legs, current_bar.close, current_bar.timestamp, vol)
         if mark is None:
             # No real quote near this bar — can't evaluate an exit; hold and
@@ -134,13 +134,35 @@ class BacktestEngine:
 
         dte = trading_days_until(open_position.expiration, as_of)
         days_held = trading_days_until(as_of, open_position.entry_date)
+
+        # Re-score the same way _maybe_enter does for a fresh entry, so an
+        # open position's reversal-exit and conviction-hold checks (see
+        # trade_management/exit_rules.py) run against the real model instead
+        # of always being skipped -- a prior version of this engine never
+        # computed a fresh signal for open positions at all, so those two
+        # checks (and the live loops' whole "is the thesis still right"
+        # re-scoring) went completely unmodeled here.
+        scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, window)) is not None]
+        signal = self._decision_model.score(symbol, window, scan_hits, self._config.confidence_threshold)
+        current_direction = signal.direction if signal.meets_threshold else TradeDirection.NEUTRAL
+        current_confidence = signal.confidence
+
         decision = evaluate_exit(
-            open_position.state, current_value, dte, self._tm_config, trading_days_held=days_held
+            open_position.state, current_value, dte, self._tm_config, trading_days_held=days_held,
+            current_direction=current_direction, entry_direction=open_position.direction,
+            current_confidence=current_confidence,
         )
 
         if decision.action is ExitAction.NONE:
-            if decision.stop_loss_streak != open_position.state.stop_loss_streak:
-                open_position.state = replace(open_position.state, stop_loss_streak=decision.stop_loss_streak)
+            if (
+                decision.stop_loss_streak != open_position.state.stop_loss_streak
+                or decision.reversal_streak != open_position.state.reversal_streak
+                or decision.trailing_stop_streak != open_position.state.trailing_stop_streak
+            ):
+                open_position.state = replace(
+                    open_position.state, stop_loss_streak=decision.stop_loss_streak,
+                    reversal_streak=decision.reversal_streak, trailing_stop_streak=decision.trailing_stop_streak,
+                )
             return equity, open_position
 
         closed_qty = decision.qty_to_close
@@ -172,7 +194,9 @@ class BacktestEngine:
         current_gain_pct = (current_value - open_position.state.entry_cost_per_unit) / open_position.state.entry_cost_per_unit
         peak = max(open_position.state.peak_gain_pct, current_gain_pct)
         open_position.state = replace(
-            open_position.state, qty=remaining, scaled_out=True, peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak
+            open_position.state, qty=remaining, scaled_out=True, peak_gain_pct=peak,
+            stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
+            trailing_stop_streak=decision.trailing_stop_streak,
         )
         return equity, open_position
 

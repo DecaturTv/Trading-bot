@@ -29,6 +29,19 @@ class TradeManagementConfig:
     # settings.max_hold_trading_days via dashboard/context.py.
     max_hold_trading_days: int = 10**9  # force-close a position once it's been open this many trading days, regardless of P&L
     scale_out_fraction: float = 0.5  # fraction of the position to sell when profit_target_dollars is first reached
+    # Lets a position outlive max_hold_trading_days on its own recognizance:
+    # once the cap is reached, evaluate_exit skips the force-close for a
+    # cycle where the freshly re-scored signal (same TradeSignal.confidence
+    # scale the entry threshold uses, 0-100) still meets this floor AND still
+    # agrees with the direction the position was opened on -- i.e. keep
+    # riding a winner only while the model's own read on it hasn't faded,
+    # instead of either a blind same-day cutoff or a blind hold-to-expiry.
+    # Every other exit rule (stop-loss, reversal, expiry) still applies
+    # unchanged on top of this -- conviction only buys an extension past the
+    # calendar cap, never immunity from an actual stop or a real reversal.
+    # None (default) preserves the unconditional cutoff exactly as before.
+    # See project memory on the INTC trade this was built to answer.
+    conviction_hold_confidence_floor: float | None = None
     # Hard tail stop: close the whole position immediately (no confirmation
     # streak) once it's down this fraction of the premium paid. The normal
     # stop_loss_pct needs stop_loss_confirmation_count consecutive breaching
@@ -57,6 +70,8 @@ class TradeManagementConfig:
             raise ValueError("max_hold_trading_days must be >= 1")
         if not 0 < self.scale_out_fraction < 1:
             raise ValueError("scale_out_fraction must be in (0, 1)")
+        if self.conviction_hold_confidence_floor is not None and self.conviction_hold_confidence_floor <= 0:
+            raise ValueError("conviction_hold_confidence_floor must be positive when set")
 
 
 @dataclass(frozen=True)

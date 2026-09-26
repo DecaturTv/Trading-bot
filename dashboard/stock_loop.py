@@ -200,16 +200,20 @@ async def stock_position_management_cycle(context: AppContext, now: datetime, on
             logger.exception("stock position management failed for %s", record.symbol)
 
 
-async def _current_signal_direction(context: AppContext, symbol: str, now: datetime) -> TradeDirection | None:
-    """Re-scores symbol's current signal for the reversal-exit check on an
-    open position. Returns None (skip the check this cycle) if there isn't
-    enough bar history yet; NEUTRAL if the signal doesn't meet the confidence
-    threshold, so a low-conviction flicker doesn't count as a confirmed
-    reversal any more than it would count as a confirmed entry."""
+async def _current_signal(context: AppContext, symbol: str, now: datetime) -> tuple[TradeDirection | None, float | None]:
+    """Re-scores symbol's current signal for the reversal-exit / conviction-
+    hold checks on an open position. Returns (None, None) (skip both checks
+    this cycle) if there isn't enough bar history yet; direction comes back
+    NEUTRAL if the signal doesn't meet the confidence threshold, so a low-
+    conviction flicker doesn't count as a confirmed reversal any more than it
+    would count as a confirmed entry -- and NEUTRAL never matches a real
+    entry_direction, so it can't trigger a conviction-hold reprieve either.
+    confidence feeds evaluate_exit's conviction-hold override
+    (TradeManagementConfig.conviction_hold_confidence_floor)."""
     await context.ingestion_service.ingest_incremental(symbol, _SIGNAL_TIMEFRAME, end=now)
     bars = await context.bars_repository.get_bars(symbol, _SIGNAL_TIMEFRAME, now - timedelta(days=_BARS_LOOKBACK_DAYS), now)
     if len(bars) < _MIN_BARS_FOR_SIGNAL:
-        return None
+        return None, None
 
     scan_hits = [hit for fn in _SCAN_FUNCTIONS if (hit := fn(symbol, bars)) is not None]
     congress_trades = await context.congress_trade_manager.get_recent_trades(
@@ -219,7 +223,9 @@ async def _current_signal_direction(context: AppContext, symbol: str, now: datet
         symbol, bars, scan_hits, context.settings.stock_confidence_threshold,
         congress_trades=congress_trades, tracked_members=context.settings.congress_tracked_members,
     )
-    return signal.direction if signal.meets_threshold else TradeDirection.NEUTRAL
+    if not signal.meets_threshold:
+        return TradeDirection.NEUTRAL, signal.confidence
+    return signal.direction, signal.confidence
 
 
 async def _manage_stock_position(context: AppContext, record: OpenStockPositionRecord, now: datetime, on_event: EventCallback) -> None:
@@ -228,12 +234,13 @@ async def _manage_stock_position(context: AppContext, record: OpenStockPositionR
     if current_value <= 0:
         return
 
-    current_direction = await _current_signal_direction(context, record.symbol, now)
+    current_direction, current_confidence = await _current_signal(context, record.symbol, now)
 
     decision = evaluate_exit(
         record.state, current_value, _NEVER_EXPIRES, context.trade_management_config,
         current_direction=current_direction, entry_direction=record.direction,
         trading_days_held=trading_days_until(now.date(), record.entry_date),
+        current_confidence=current_confidence,
     )
     if decision.action is ExitAction.NONE:
         if (
