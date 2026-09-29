@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock
 import pytest
 from dash_factories import make_context, make_forex_position, make_position_record, make_stock_position_record
 
-from broker.models import OrderSide, Position
+from broker.models import OrderSide, OrderType, Position, PositionIntent
 from decision_engine.models import TradeDirection
 from forex.xsmom_repository import XsmomPosition
 from dashboard.reconciliation_loop import Discrepancy, ReconciliationState, diff_positions, reconciliation_cycle
@@ -28,6 +28,7 @@ def _context(options=(), stocks=(), held=(), ignore=()):
     context.broker.get_positions.return_value = list(held)
     context.settings.reconciliation_ignore_symbols = tuple(ignore)
     context.forex_broker = None  # equities-only unless a test wires forex in
+    context.settings.reconciliation_auto_fix = False  # alert-only unless a test opts in
     return context
 
 
@@ -179,3 +180,121 @@ async def test_one_broker_failing_does_not_blind_the_other():
     await _run_twice(context)
 
     context.alert_manager.send.assert_awaited_once()  # the forex mismatch still alerts
+
+
+
+# --- auto-fix -------------------------------------------------------------
+
+CLOSED_SATURDAY = datetime(2026, 10, 3, 15, 0, tzinfo=timezone.utc)
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_untracks_a_phantom_the_broker_confirms_it_does_not_hold():
+    """ETHA/NVDL/ONDS/SOXS: tracked for four weeks, never filled, and blocking
+    every sleeve's entries through the exposure check."""
+    record = make_position_record(symbol="ETHA", qty=14, expiration=date(2026, 9, 25))
+    context = _context(options=[record])
+    context.settings.reconciliation_auto_fix = True
+    context.broker.get_position.return_value = None
+
+    await _run_twice(context)
+
+    context.position_repository.delete.assert_awaited_once_with("ETHA")
+    assert "Auto-fixed" in context.alert_manager.send.await_args.args[0].message
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_keeps_tracking_if_the_direct_lookup_finds_the_position():
+    record = make_position_record(symbol="ETHA", qty=14)
+    context = _context(options=[record])
+    context.settings.reconciliation_auto_fix = True
+    context.broker.get_position.return_value = _held(record.legs[0].symbol, 14)  # bulk listing missed it
+
+    await _run_twice(context)
+
+    context.position_repository.delete.assert_not_awaited()
+    assert "Not fixed" in context.alert_manager.send.await_args.args[0].message
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_closes_an_untracked_stock_stray_at_market():
+    context = _context(held=[_held("XYZ", 100)])
+    context.settings.reconciliation_auto_fix = True
+    context.broker.get_position.return_value = _held("XYZ", 100)
+
+    await _run_twice(context)
+
+    request = context.broker.submit_order.await_args.args[0]
+    assert (request.symbol, request.qty, request.side, request.order_type) == ("XYZ", 100, OrderSide.SELL, OrderType.MARKET)
+    assert request.position_intent is None
+    assert "closed the untracked 100" in context.alert_manager.send.await_args.args[0].message
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_tags_option_stray_closes_sell_to_close():
+    """Without the tag Alpaca reads the sell as a naked short and rejects it."""
+    symbol = "IBIT260925C00050000"
+    context = _context(held=[_held(symbol, 8)])
+    context.settings.reconciliation_auto_fix = True
+    context.broker.get_position.return_value = _held(symbol, 8)
+
+    await _run_twice(context)
+
+    assert context.broker.submit_order.await_args.args[0].position_intent is PositionIntent.SELL_TO_CLOSE
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_does_not_trade_strays_while_the_market_is_closed():
+    context = _context(held=[_held("XYZ", 100)])
+    context.settings.reconciliation_auto_fix = True
+    context.broker.get_position.return_value = _held("XYZ", 100)
+    state = ReconciliationState()
+
+    await reconciliation_cycle(context, CLOSED_SATURDAY, state)
+    await reconciliation_cycle(context, CLOSED_SATURDAY, state)
+
+    context.broker.submit_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_never_touches_ignored_symbols():
+    context = _context(held=[_held("INTC", 800)], ignore=["INTC"])
+    context.settings.reconciliation_auto_fix = True
+
+    await _run_twice(context)
+
+    context.broker.submit_order.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_stands_down_when_drift_looks_systemic():
+    """Four strays at once looks like a bad read, not four real strays."""
+    held = [_held(s, 10) for s in ("AAA", "BBB", "CCC", "DDD")]
+    context = _context(held=held)
+    context.settings.reconciliation_auto_fix = True
+
+    await _run_twice(context)
+
+    context.broker.submit_order.assert_not_awaited()
+    assert context.alert_manager.send.await_count == 4
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_closes_an_untracked_forex_trade():
+    context = _forex_context(open_trades={"t-7": ("GBP_USD", 5000)})
+    context.settings.reconciliation_auto_fix = True
+    context.forex_broker.get_open_trade_ids.return_value = {"t-7"}
+
+    await _run_twice(context)
+
+    context.forex_broker.close_trade.assert_awaited_once_with("t-7")
+
+
+@pytest.mark.asyncio
+async def test_auto_fix_leaves_forex_trades_oanda_closed_to_the_forex_loops():
+    context = _forex_context(xsmom=[_xsmom("NZD_USD", "t-3", 2000)])
+    context.settings.reconciliation_auto_fix = True
+
+    await _run_twice(context)
+
+    context.forex_xsmom_repository.delete.assert_not_awaited()

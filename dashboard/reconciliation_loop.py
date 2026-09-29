@@ -15,8 +15,12 @@ went unnoticed for weeks:
 
 The fill checks on entry and close (execution/entry_confirmation.py,
 trade_management/close_confirmation.py) close the known causes; this cycle
-is the backstop for whatever cause comes next. It only alerts -- it never
-edits tracking or trades, since the right fix depends on why it drifted.
+is the backstop for whatever cause comes next. Confirmed phantoms and
+strays are repaired automatically (see reconciliation_fixes.py) unless
+RECONCILIATION_AUTO_FIX=false; anything it can't safely repair on its own
+(quantity mismatches, or more drift in one book than
+_MAX_AUTO_FIXES_PER_BOOK, which smells like a bad read rather than real
+drift) is alerted instead.
 
 Forex is reconciled by OANDA trade ID rather than by pair -- both forex
 books (per-pair technical loop, cross-sectional momentum) record the exact
@@ -37,8 +41,14 @@ from datetime import datetime
 from alerts.models import Alert, Severity
 
 from .context import AppContext
+from .reconciliation_fixes import auto_fix
 
 logger = logging.getLogger(__name__)
+
+# More confirmed discrepancies than this in one book at once looks systemic
+# (a repository or broker read going wrong) -- acting on each of them could
+# close real positions or drop real tracking in bulk, so alert instead.
+_MAX_AUTO_FIXES_PER_BOOK = 3
 
 
 @dataclass(frozen=True)
@@ -156,16 +166,32 @@ async def reconciliation_cycle(context: AppContext, now: datetime, state: Reconc
     confirmed = current.keys() & state.previous
     state.previous = set(current)
 
+    per_book: dict[str, int] = defaultdict(int)
+    for d in confirmed:
+        per_book[current[d]] += 1
+
     for d in sorted(confirmed, key=lambda d: d.symbol):
         book_name = current[d]
         logger.warning("reconciliation discrepancy (%s): %s", book_name, d.describe())
+
+        action = None
+        if context.settings.reconciliation_auto_fix and per_book[book_name] <= _MAX_AUTO_FIXES_PER_BOOK:
+            try:
+                action = await auto_fix(context, book_name, d.kind, d.symbol, now)
+            except Exception:
+                logger.exception("reconciliation auto-fix failed for %s; will retry next run", d.symbol)
+        if action is not None:
+            detail = f"Auto-fixed: {action}."
+        else:
+            detail = (
+                "Not fixed automatically -- check the broker and the tracking table. Add the symbol to "
+                "RECONCILIATION_IGNORE_SYMBOLS if it's a known, deliberately untracked position."
+            )
+
         await context.alert_manager.send(
             Alert(
                 title=f"Position mismatch ({book_name}): {d.symbol}",
-                message=(
-                    f"{d.describe()}. Nothing was changed automatically -- check the broker and the tracking table. "
-                    "Add the symbol to RECONCILIATION_IGNORE_SYMBOLS if it's a known, deliberately untracked position."
-                ),
+                message=f"{d.describe()}. {detail}",
                 severity=Severity.WARNING,
                 timestamp=now,
                 # Keyed on the exact mismatch so a change (e.g. a partial

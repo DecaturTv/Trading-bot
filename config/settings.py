@@ -306,6 +306,9 @@ class Settings(BaseSettings):
     # (OCC symbols for options) for positions deliberately left untracked,
     # e.g. RECONCILIATION_IGNORE_SYMBOLS=INTC.
     reconciliation_interval_seconds: int = 600
+    # Repair confirmed phantoms (drop the record) and strays (close at market)
+    # instead of only alerting -- see dashboard/reconciliation_fixes.py.
+    reconciliation_auto_fix: bool = True
     reconciliation_ignore_symbols: Annotated[tuple[str, ...], NoDecode] = ()
 
     @model_validator(mode="after")
