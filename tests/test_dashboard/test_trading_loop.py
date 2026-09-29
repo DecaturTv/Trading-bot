@@ -7,6 +7,7 @@ from dash_factories import make_account, make_bars, make_context, make_position_
 
 from broker.models import Order, OptionContract, OptionGreeks, OptionRight, OrderSide, OrderStatus, OrderType, Position
 from dashboard.trading_loop import entry_cycle, loss_limit_check_cycle, position_management_cycle, progress_report_cycle
+from trade_management.close_execution import CLOSE_PRICE_WALK
 from decision_engine.models import FactorScore, TradeDirection, TradeSignal
 from execution.executor import OrderTimeoutError
 from risk.kelly import KellyResult
@@ -565,7 +566,8 @@ async def test_position_management_cycle_does_not_record_outcome_when_close_orde
 
     await position_management_cycle(context, MARKET_OPEN_TUESDAY)
 
-    context.broker.submit_order.assert_awaited_once()
+    # the close walks mid -> halfway -> bid before giving up for this cycle
+    assert context.broker.submit_order.await_count == len(CLOSE_PRICE_WALK)
     context.trade_outcome_repository.record_outcome.assert_not_awaited()
     context.position_repository.delete.assert_not_awaited()
     context.position_repository.upsert.assert_not_awaited()
@@ -1137,3 +1139,61 @@ async def test_entry_cycle_skips_when_entry_would_chase_the_move():
     await entry_cycle(context, MARKET_OPEN_TUESDAY)
 
     context.broker.get_option_chain.assert_not_awaited()
+
+
+def test_spread_rejection():
+    from dashboard.option_guards import spread_rejection
+
+    tight, wide = make_chain([(100, 0.15)])[0], make_chain([(100, 0.15)])[0]
+    wide = OptionContract(**{**wide.__dict__, "bid": 0.10, "ask": 0.40})
+    assert spread_rejection(tight, 0.20) is None  # 5.0/5.2 is ~4%
+    assert "spread" in spread_rejection(wide, 0.20)
+
+
+def _underlying_stop_record(stop, entry=145.0):
+    from dataclasses import replace as dc_replace
+
+    record = make_position_record(symbol="AAPL", qty=2, entry_cost=500.0, expiration=EXPIRY)
+    return dc_replace(record, state=dc_replace(record.state, entry_underlying_price=entry, underlying_stop_price=stop))
+
+
+def _quote_chain(leg_symbol, bid, ask):
+    return [
+        OptionContract(
+            symbol=leg_symbol, underlying_symbol="AAPL", strike=150.0, expiration=EXPIRY, right=OptionRight.CALL,
+            bid=bid, ask=ask, last_price=(bid + ask) / 2, implied_volatility=0.3,
+            greeks=OptionGreeks(delta=0.1, gamma=0.02, theta=-0.05, vega=0.1, rho=0.01),
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_position_management_stops_on_underlying_close_through_stop():
+    context = make_context()
+    record = _underlying_stop_record(stop=140.0)
+    context.position_repository.get_all.return_value = [record]
+    # option barely down, but the underlying's last completed 5Min close (138) is through the stop
+    context.broker.get_option_chain.return_value = _quote_chain(record.legs[0].symbol, 4.9, 5.0)
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.trade_outcome_repository.record_outcome.assert_awaited_once()
+    context.position_repository.delete.assert_awaited_once_with("AAPL")
+
+
+@pytest.mark.asyncio
+async def test_position_management_ignores_option_quote_collapse_while_underlying_holds():
+    context = make_context()
+    record = _underlying_stop_record(stop=120.0, entry=130.0)
+    context.position_repository.get_all.return_value = [record]
+    # option quote down 90% (a -50% stop_loss_pct or catastrophic stop would
+    # fire), but the underlying (138) is above both its stop and its entry
+    context.broker.get_option_chain.return_value = _quote_chain(record.legs[0].symbol, 0.45, 0.55)
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()  # no reversal
+
+    await position_management_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_not_awaited()
+    context.trade_outcome_repository.record_outcome.assert_not_awaited()

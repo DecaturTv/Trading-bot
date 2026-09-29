@@ -26,8 +26,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from alerts.models import Alert, Severity
-from broker.models import MultiLegOrderRequest, OptionRight
+from broker.models import OptionRight
 from decision_engine.confirmation import is_confirmed, update_streak
+from decision_engine.entry_timing import underlying_stop_level
 from decision_engine.models import TradeDirection
 from execution.entry_confirmation import confirm_open_fill
 from ml.trade_outcomes import get_live_trade_statistics
@@ -37,8 +38,7 @@ from options.strategy_builders import MIN_TRADEABLE_CONTRACT_COST, build_long_ca
 from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
-from trade_management.close_confirmation import confirm_close_fill
-from trade_management.close_order_builder import build_close_order_request
+from trade_management.close_execution import close_with_price_walk
 from trade_management.exit_rules import evaluate_exit
 from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, OpenPositionRecord, PersistedLeg, PositionState
@@ -46,6 +46,7 @@ from trade_management.pnl import current_value_per_unit as compute_current_value
 from utils.time import is_equity_market_open, is_us_market_weekday, minutes_since_equity_open
 
 from .context import AppContext, get_effective_breakout_account
+from .option_guards import latest_completed_5m_close, recent_5m_bars, spread_rejection
 from .trading_loop import (
     _BARS_LOOKBACK_DAYS,
     _LOOKBACK_DAYS_BY_TIMEFRAME,
@@ -191,6 +192,21 @@ async def _maybe_enter(
         )
         return
 
+    wide = spread_rejection(contract, context.settings.max_entry_spread_pct)
+    if wide is not None:
+        logger.info("breakout entry cycle (%s) skipped %s: %s", timeframe, symbol, wide)
+        return
+
+    # Stop on the underlying, not the option quote (see PositionState.underlying_stop_price).
+    bars_5m = await recent_5m_bars(context, symbol, now)
+    stop_level = underlying_stop_level(
+        bars_5m, signal.direction, now, context.settings.underlying_stop_atr_multiple
+    )
+    if stop_level is None:
+        logger.info("breakout entry cycle (%s) skipped %s: not enough 5Min history to set the underlying stop", timeframe, symbol)
+        return
+    entry_underlying_price, underlying_stop_price = stop_level
+
     async with context.breakout_entry_lock:
         if await context.breakout_position_repository.get(symbol) is not None:
             return
@@ -250,7 +266,8 @@ async def _maybe_enter(
                 )
             ],
             state=PositionState(
-                symbol=symbol, qty=qty, entry_cost_per_unit=strategy.net_debit, scaled_out=False, peak_gain_pct=0.0
+                symbol=symbol, qty=qty, entry_cost_per_unit=strategy.net_debit, scaled_out=False, peak_gain_pct=0.0,
+                entry_underlying_price=entry_underlying_price, underlying_stop_price=underlying_stop_price,
             ),
         )
         await context.breakout_position_repository.upsert(record, updated_at=now)
@@ -333,32 +350,35 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
     dte = trading_days_until(nearest_expiration, now.date())
     current_direction, current_confidence = await _current_signal(context, record.symbol, now)
 
+    underlying_close = (
+        await latest_completed_5m_close(context, record.symbol, now)
+        if record.state.underlying_stop_price is not None else None
+    )
+
     decision = evaluate_exit(
         record.state, current_value, dte, context.trade_management_config,
         current_direction=current_direction, entry_direction=record.direction,
         trading_days_held=trading_days_until(now.date(), record.entry_date),
         current_confidence=current_confidence,
+        underlying_close=underlying_close,
     )
     if decision.action is ExitAction.NONE:
         if (
             decision.stop_loss_streak != record.state.stop_loss_streak
             or decision.reversal_streak != record.state.reversal_streak
             or decision.trailing_stop_streak != record.state.trailing_stop_streak
+            or decision.catastrophic_streak != record.state.catastrophic_streak
         ):
             updated_state = replace(
                 record.state, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
-                trailing_stop_streak=decision.trailing_stop_streak,
+                trailing_stop_streak=decision.trailing_stop_streak, catastrophic_streak=decision.catastrophic_streak,
             )
             await context.breakout_position_repository.upsert(replace(record, state=updated_state), updated_at=now)
         return
 
-    close_request = build_close_order_request(strategy, decision.qty_to_close, current_contracts)
-    if isinstance(close_request, MultiLegOrderRequest):
-        order = await context.broker.submit_multi_leg_order(close_request)
-    else:
-        order = await context.broker.submit_order(close_request)
-
-    fill = await confirm_close_fill(context.executor, context.broker, order.order_id, record.symbol)
+    fill = await close_with_price_walk(
+        context.broker, context.executor, strategy, decision.qty_to_close, current_contracts, record.symbol
+    )
     if not fill.filled:
         return  # position stays tracked as-is; next cycle re-evaluates and retries
 
@@ -374,7 +394,7 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
         updated_state = replace(
             record.state, qty=remaining, scaled_out=True,
             peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
-            trailing_stop_streak=decision.trailing_stop_streak,
+            trailing_stop_streak=decision.trailing_stop_streak, catastrophic_streak=decision.catastrophic_streak,
         )
         await context.breakout_position_repository.upsert(replace(record, state=updated_state), updated_at=now)
 

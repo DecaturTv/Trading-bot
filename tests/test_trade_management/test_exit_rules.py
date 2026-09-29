@@ -66,17 +66,92 @@ def test_stop_loss_streak_resets_once_price_recovers():
     assert decision.stop_loss_streak == 0
 
 
-def test_catastrophic_stop_closes_immediately_without_confirmation():
-    # down 60% (200 vs 500 entry); catastrophic at -50%, confirmation would
-    # otherwise need 3 checks
-    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=3)
+def test_catastrophic_stop_needs_confirmation():
+    # down 60% (200 vs 500 entry); catastrophic at -50% no longer fires on a
+    # single quote -- it waits stop_loss_confirmation_count checks too
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=2)
     position = make_position(entry_cost_per_unit=500.0, stop_loss_streak=0)
 
-    decision = evaluate_exit(position, current_value_per_unit=200.0, trading_days_to_expiry=10, config=config)
+    first = evaluate_exit(position, current_value_per_unit=200.0, trading_days_to_expiry=10, config=config)
+    assert first.action is ExitAction.NONE
+    assert first.catastrophic_streak == 1
+
+    second = evaluate_exit(
+        make_position(entry_cost_per_unit=500.0, catastrophic_streak=1),
+        current_value_per_unit=200.0, trading_days_to_expiry=10, config=config,
+    )
+    assert second.action is ExitAction.STOP_LOSS
+    assert second.qty_to_close == position.qty
+    assert "catastrophic" in second.reason
+
+
+def _underlying_stop_position(**overrides):
+    # a call: entry with the underlying at 100, stop at 97
+    return make_position(entry_cost_per_unit=500.0, entry_underlying_price=100.0, underlying_stop_price=97.0, **overrides)
+
+
+def test_underlying_stop_ignores_option_premium_drawdown():
+    # option down 40% (past the -25% premium stop) but the stock is above its stop
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=1)
+
+    decision = evaluate_exit(
+        _underlying_stop_position(), current_value_per_unit=300.0, trading_days_to_expiry=10, config=config,
+        underlying_close=98.5,
+    )
+
+    assert decision.action is ExitAction.NONE
+
+
+def test_underlying_stop_fires_on_close_through_stop():
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50)
+
+    decision = evaluate_exit(
+        _underlying_stop_position(), current_value_per_unit=480.0, trading_days_to_expiry=10, config=config,
+        underlying_close=96.9,
+    )
 
     assert decision.action is ExitAction.STOP_LOSS
-    assert decision.qty_to_close == position.qty
+    assert "underlying" in decision.reason
+
+
+def test_underlying_stop_for_put_is_above_entry():
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50)
+    put = make_position(entry_cost_per_unit=500.0, entry_underlying_price=100.0, underlying_stop_price=103.0)
+
+    assert evaluate_exit(put, 450.0, 10, config, underlying_close=102.0).action is ExitAction.NONE
+    assert evaluate_exit(put, 450.0, 10, config, underlying_close=103.5).action is ExitAction.STOP_LOSS
+
+
+def test_catastrophic_ignores_collapsed_quote_when_underlying_is_with_us():
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=1)
+
+    decision = evaluate_exit(
+        _underlying_stop_position(catastrophic_streak=5), current_value_per_unit=10.0, trading_days_to_expiry=10,
+        config=config, underlying_close=100.5,
+    )
+
+    assert decision.action is ExitAction.NONE
+    assert decision.catastrophic_streak == 0
+
+
+def test_catastrophic_fires_with_underlying_against_entry():
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=1)
+
+    decision = evaluate_exit(
+        _underlying_stop_position(), current_value_per_unit=100.0, trading_days_to_expiry=10, config=config,
+        underlying_close=98.0,
+    )
+
+    assert decision.action is ExitAction.STOP_LOSS
     assert "catastrophic" in decision.reason
+
+
+def test_without_underlying_close_falls_back_to_premium_stop():
+    config = make_config(stop_loss_pct=0.25, catastrophic_stop_pct=0.50, stop_loss_confirmation_count=1)
+
+    decision = evaluate_exit(_underlying_stop_position(), 300.0, 10, config)
+
+    assert decision.action is ExitAction.STOP_LOSS
 
 
 def test_catastrophic_stop_fires_even_past_max_hold():

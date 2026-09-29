@@ -4,9 +4,9 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from alerts.models import Alert, Severity
-from broker.models import MultiLegOrderRequest, OptionRight
+from broker.models import OptionRight
 from decision_engine.confirmation import is_confirmed, update_streak
-from decision_engine.entry_timing import chase_rejection, drop_forming_bar
+from decision_engine.entry_timing import chase_rejection, drop_forming_bar, underlying_stop_level
 from decision_engine.models import TradeDirection
 from execution.entry_confirmation import confirm_open_fill
 from ml.trade_outcomes import get_live_trade_statistics
@@ -17,8 +17,7 @@ from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
 from scanner.scans import scan_gap, scan_momentum, scan_unusual_volume
-from trade_management.close_confirmation import confirm_close_fill
-from trade_management.close_order_builder import build_close_order_request
+from trade_management.close_execution import close_with_price_walk
 from trade_management.exit_rules import evaluate_exit
 from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, OpenPositionRecord, PersistedLeg, PositionState
@@ -26,6 +25,7 @@ from trade_management.pnl import current_value_per_unit as compute_current_value
 from utils.time import is_equity_market_open, is_us_market_weekday, minutes_since_equity_open
 
 from .context import AppContext, get_effective_account
+from .option_guards import latest_completed_5m_close, recent_5m_bars, spread_rejection
 
 logger = logging.getLogger(__name__)
 
@@ -154,13 +154,7 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
     # Don't buy the top of a move that already happened: wait for the
     # underlying to pull back or consolidate. The confirmed streak is kept, so
     # the entry is retried on later scans. See decision_engine/entry_timing.py.
-    if timeframe == "5Min":
-        bars_5m = raw_bars
-    else:
-        await context.ingestion_service.ingest_incremental(symbol, "5Min", end=now)
-        bars_5m = await context.bars_repository.get_bars(
-            symbol, "5Min", now - timedelta(days=_LOOKBACK_DAYS_BY_TIMEFRAME["5Min"]), now
-        )
+    bars_5m = raw_bars if timeframe == "5Min" else await recent_5m_bars(context, symbol, now)
     chasing = chase_rejection(
         bars_5m, signal.direction, now,
         context.settings.entry_max_extension_atr, context.settings.entry_max_range_position,
@@ -255,6 +249,20 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
         )
         return
 
+    wide = spread_rejection(contract, context.settings.max_entry_spread_pct)
+    if wide is not None:
+        logger.info("entry cycle (%s) skipped %s: %s", timeframe, symbol, wide)
+        return
+
+    # Stop on the underlying, not the option quote (see PositionState.underlying_stop_price).
+    stop_level = underlying_stop_level(
+        bars_5m, signal.direction, now, context.settings.underlying_stop_atr_multiple
+    )
+    if stop_level is None:
+        logger.info("entry cycle (%s) skipped %s: not enough 5Min history to set the underlying stop", timeframe, symbol)
+        return
+    entry_underlying_price, underlying_stop_price = stop_level
+
     # Everything above this point is read-only (bars, signal, chain, strike)
     # and safe to run concurrently across the 5m/15m/1h/1d option cycles and
     # the stock entry cycle. From here on we're committing real capital
@@ -324,7 +332,10 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
                     right=leg.contract.right, side=leg.side,
                 )
             ],
-            state=PositionState(symbol=symbol, qty=qty, entry_cost_per_unit=strategy.net_debit, scaled_out=False, peak_gain_pct=0.0),
+            state=PositionState(
+                symbol=symbol, qty=qty, entry_cost_per_unit=strategy.net_debit, scaled_out=False, peak_gain_pct=0.0,
+                entry_underlying_price=entry_underlying_price, underlying_stop_price=underlying_stop_price,
+            ),
         )
         await context.position_repository.upsert(record, updated_at=now)
 
@@ -334,7 +345,7 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
             title=f"Opened {strategy.strategy_type.value} on {symbol}",
             message=(
                 f"qty={qty} entry_cost={strategy.net_debit:.2f} confidence={signal.confidence:.1f} "
-                f"timeframe={timeframe} order={result.order.order_id}"
+                f"underlying_stop={underlying_stop_price:.2f} timeframe={timeframe} order={result.order.order_id}"
             ),
             severity=Severity.INFO,
             timestamp=now,
@@ -414,32 +425,35 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
 
     current_direction, current_confidence = await _current_signal(context, record.symbol, now)
 
+    underlying_close = (
+        await latest_completed_5m_close(context, record.symbol, now)
+        if record.state.underlying_stop_price is not None else None
+    )
+
     decision = evaluate_exit(
         record.state, current_value, dte, context.trade_management_config,
         current_direction=current_direction, entry_direction=record.direction,
         trading_days_held=trading_days_until(now.date(), record.entry_date),
         current_confidence=current_confidence,
+        underlying_close=underlying_close,
     )
     if decision.action is ExitAction.NONE:
         if (
             decision.stop_loss_streak != record.state.stop_loss_streak
             or decision.reversal_streak != record.state.reversal_streak
             or decision.trailing_stop_streak != record.state.trailing_stop_streak
+            or decision.catastrophic_streak != record.state.catastrophic_streak
         ):
             updated_state = replace(
                 record.state, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
-                trailing_stop_streak=decision.trailing_stop_streak,
+                trailing_stop_streak=decision.trailing_stop_streak, catastrophic_streak=decision.catastrophic_streak,
             )
             await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
         return
 
-    close_request = build_close_order_request(strategy, decision.qty_to_close, current_contracts)
-    if isinstance(close_request, MultiLegOrderRequest):
-        order = await context.broker.submit_multi_leg_order(close_request)
-    else:
-        order = await context.broker.submit_order(close_request)
-
-    fill = await confirm_close_fill(context.executor, context.broker, order.order_id, record.symbol)
+    fill = await close_with_price_walk(
+        context.broker, context.executor, strategy, decision.qty_to_close, current_contracts, record.symbol
+    )
     if not fill.filled:
         return  # position stays tracked as-is; next cycle re-evaluates and retries
 
@@ -455,7 +469,7 @@ async def _manage_position(context: AppContext, record: OpenPositionRecord, now:
         updated_state = replace(
             record.state, qty=remaining, scaled_out=True,
             peak_gain_pct=peak, stop_loss_streak=decision.stop_loss_streak, reversal_streak=decision.reversal_streak,
-            trailing_stop_streak=decision.trailing_stop_streak,
+            trailing_stop_streak=decision.trailing_stop_streak, catastrophic_streak=decision.catastrophic_streak,
         )
         await context.position_repository.upsert(replace(record, state=updated_state), updated_at=now)
 

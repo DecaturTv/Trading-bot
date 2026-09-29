@@ -49,10 +49,10 @@ class CloseFillResult:
 
 
 async def confirm_close_fill(
-    executor: OrderExecutor, broker: BrokerAdapter, order_id: str, symbol: str
+    executor: OrderExecutor, broker: BrokerAdapter, order_id: str, symbol: str, max_attempts: int = 30
 ) -> CloseFillResult:
     try:
-        order = await executor.await_fill(order_id)
+        order = await executor.await_fill(order_id, max_attempts=max_attempts)
     except OrderTimeoutError:
         logger.warning(
             "close order %s for %s did not reach a terminal status in time; cancelling so it can't pile up "

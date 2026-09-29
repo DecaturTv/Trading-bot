@@ -86,6 +86,15 @@ class PositionState:
     stop_loss_streak: int = 0  # consecutive position-checks where unrealized loss has breached stop_loss_pct
     reversal_streak: int = 0  # consecutive position-checks where the current signal has opposed the entry direction
     trailing_stop_streak: int = 0  # consecutive position-checks where the pullback from peak gain has breached trailing_stop_pct
+    # Underlying-price stop (options only, set at entry since 2026-09-29):
+    # the stop is judged on the underlying's completed 5Min closes against
+    # underlying_stop_price instead of on the option's quote, which on thin
+    # books printed garbage marks that stopped positions out within minutes.
+    # None on positions opened before this existed -> the -stop_loss_pct
+    # premium stop applies instead.
+    entry_underlying_price: float | None = None
+    underlying_stop_price: float | None = None
+    catastrophic_streak: int = 0  # consecutive position-checks breaching catastrophic_stop_pct
 
 
 @dataclass(frozen=True)
@@ -134,3 +143,4 @@ class ExitDecision:
     stop_loss_streak: int  # streak value the caller should persist on PositionState, win or lose this check
     reversal_streak: int = 0  # streak value the caller should persist on PositionState, win or lose this check
     trailing_stop_streak: int = 0  # streak value the caller should persist on PositionState, win or lose this check
+    catastrophic_streak: int = 0  # streak value the caller should persist on PositionState, win or lose this check

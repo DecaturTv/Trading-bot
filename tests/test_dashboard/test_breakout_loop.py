@@ -14,6 +14,7 @@ from dashboard.breakout_loop import (
     breakout_loss_limit_check_cycle,
     breakout_position_management_cycle,
 )
+from trade_management.close_execution import CLOSE_PRICE_WALK
 
 MARKET_OPEN_TUESDAY = datetime(2026, 7, 21, 15, 0, tzinfo=timezone.utc)
 # ~20 calendar days out — inside breakout_loop._TARGET_DTE (20) so the DTE
@@ -182,7 +183,8 @@ async def test_exit_does_not_record_outcome_or_untrack_when_close_order_never_fi
 
     await breakout_position_management_cycle(context, MARKET_OPEN_TUESDAY)
 
-    context.broker.submit_order.assert_awaited_once()
+    # the close walks mid -> halfway -> bid before giving up for this cycle
+    assert context.broker.submit_order.await_count == len(CLOSE_PRICE_WALK)
     context.trade_outcome_repository.record_outcome.assert_not_awaited()
     context.breakout_position_repository.delete.assert_not_awaited()
     context.breakout_position_repository.upsert.assert_not_awaited()
@@ -209,7 +211,8 @@ async def test_exit_cancels_and_retries_when_close_order_times_out():
 
     await breakout_position_management_cycle(context, MARKET_OPEN_TUESDAY)
 
-    context.broker.cancel_order.assert_awaited_once_with("order-1")
+    assert context.broker.cancel_order.await_count == len(CLOSE_PRICE_WALK)
+    context.broker.cancel_order.assert_awaited_with("order-1")
     context.trade_outcome_repository.record_outcome.assert_not_awaited()
     context.breakout_position_repository.delete.assert_not_awaited()
 

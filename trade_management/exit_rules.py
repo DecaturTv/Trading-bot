@@ -13,6 +13,7 @@ def evaluate_exit(
     entry_direction: TradeDirection | None = None,
     trading_days_held: int = 0,
     current_confidence: float | None = None,
+    underlying_close: float | None = None,
 ) -> ExitDecision:
     """Pure decision function — evaluates one snapshot in time. Peak-gain
     tracking for the trailing stop, and the stop-loss/reversal/trailing-stop
@@ -40,25 +41,47 @@ def evaluate_exit(
     keeps saying so, not on a blind timer. Callers that don't track
     trading_days_held/current_confidence leave the defaults and get the
     original unconditional-cutoff behavior.
+
+    underlying_close is the underlying's latest completed-bar close. When it's
+    given and the position carries an underlying stop (PositionState.
+    underlying_stop_price), the stop is judged on it instead of on the
+    option's -stop_loss_pct premium loss; see _underlying_stop_breached.
     """
     gain_pct = unrealized_gain_pct(position.entry_cost_per_unit, current_value_per_unit)
 
-    # Hard tail stop, checked before everything: a position down
-    # catastrophic_stop_pct or more is closed now, no confirmation streak. The
-    # normal stop_loss_pct waits for stop_loss_confirmation_count consecutive
-    # breaching checks (to ignore a single wide/noisy quote); on a real gap
-    # that lag is how a -25% stop realises as a -80% loss.
-    if gain_pct <= -config.catastrophic_stop_pct:
+    uses_underlying_stop = (
+        underlying_close is not None
+        and position.underlying_stop_price is not None
+        and position.entry_underlying_price is not None
+    )
+
+    # Hard tail stop, checked before everything. It backstops the gap an
+    # option can fall through before the normal stop acts. It used to fire on
+    # a single quote, which on thin books sold positions for pennies within
+    # minutes of entry (HPQ 0.95 -> 0.02 in 2 min, on a quote the market
+    # never traded at again; see project memory on the wick-out analysis).
+    # Now it needs stop_loss_confirmation_count consecutive breaching checks,
+    # and with an underlying stop the underlying must also be trading against
+    # the entry: a collapsed option quote with a flat stock is a bad quote,
+    # not a loss.
+    if gain_pct <= -config.catastrophic_stop_pct and (
+        not uses_underlying_stop or _underlying_against_entry(position, underlying_close)
+    ):
+        catastrophic_streak = position.catastrophic_streak + 1
+    else:
+        catastrophic_streak = 0
+    if catastrophic_streak >= config.stop_loss_confirmation_count:
         return ExitDecision(
             action=ExitAction.STOP_LOSS,
             qty_to_close=position.qty,
             reason=(
                 f"unrealized loss {gain_pct:.1%} breached catastrophic stop "
-                f"-{config.catastrophic_stop_pct:.1%} — closing immediately, no confirmation"
+                f"-{config.catastrophic_stop_pct:.1%} for {catastrophic_streak} consecutive checks"
             ),
-            stop_loss_streak=position.stop_loss_streak + 1,
+            stop_loss_streak=position.stop_loss_streak,
             reversal_streak=0,
             trailing_stop_streak=0,
+            catastrophic_streak=catastrophic_streak,
         )
 
     # Hard time cap, checked before anything else: a position that's been open
@@ -97,6 +120,7 @@ def evaluate_exit(
             stop_loss_streak=0,
             reversal_streak=0,
             trailing_stop_streak=0,
+            catastrophic_streak=catastrophic_streak,
         )
 
     # Require the reversal to hold across N consecutive checks before acting
@@ -114,7 +138,24 @@ def evaluate_exit(
 
     trailing_stop_streak = position.trailing_stop_streak
     stop_loss_streak = position.stop_loss_streak
-    if gain_pct <= -config.stop_loss_pct:
+    if uses_underlying_stop:
+        # A completed-bar close is its own confirmation (the position check
+        # re-reads the same bar every cycle), so no streak here.
+        stop_loss_streak = 0
+        if _underlying_stop_breached(position, underlying_close):
+            return ExitDecision(
+                action=ExitAction.STOP_LOSS,
+                qty_to_close=position.qty,
+                reason=(
+                    f"underlying closed at {underlying_close:.2f}, through stop {position.underlying_stop_price:.2f} "
+                    f"(entry {position.entry_underlying_price:.2f}); option at {gain_pct:.1%}"
+                ),
+                stop_loss_streak=0,
+                reversal_streak=reversal_streak,
+                trailing_stop_streak=trailing_stop_streak,
+                catastrophic_streak=catastrophic_streak,
+            )
+    elif gain_pct <= -config.stop_loss_pct:
         stop_loss_streak = position.stop_loss_streak + 1
         # Require the breach to hold across N consecutive checks before acting
         # on it — a single noisy quote (wide bid/ask on a thin option) can
@@ -132,6 +173,7 @@ def evaluate_exit(
                 stop_loss_streak=stop_loss_streak,
                 reversal_streak=reversal_streak,
                 trailing_stop_streak=trailing_stop_streak,
+                catastrophic_streak=catastrophic_streak,
             )
     else:
         stop_loss_streak = 0
@@ -147,9 +189,10 @@ def evaluate_exit(
             stop_loss_streak=stop_loss_streak,
             reversal_streak=reversal_streak,
             trailing_stop_streak=trailing_stop_streak,
+            catastrophic_streak=catastrophic_streak,
         )
 
-    if gain_pct <= -config.stop_loss_pct:
+    if not uses_underlying_stop and gain_pct <= -config.stop_loss_pct:
         return ExitDecision(
             action=ExitAction.NONE,
             qty_to_close=0,
@@ -160,6 +203,7 @@ def evaluate_exit(
             stop_loss_streak=stop_loss_streak,
             reversal_streak=reversal_streak,
             trailing_stop_streak=trailing_stop_streak,
+            catastrophic_streak=catastrophic_streak,
         )
 
     dollar_gain = position.qty * (current_value_per_unit - position.entry_cost_per_unit)
@@ -178,6 +222,7 @@ def evaluate_exit(
                 stop_loss_streak=stop_loss_streak,
                 reversal_streak=reversal_streak,
                 trailing_stop_streak=trailing_stop_streak,
+                catastrophic_streak=catastrophic_streak,
             )
         # Position too small to split (e.g. a single contract) — take it all.
         return ExitDecision(
@@ -187,6 +232,7 @@ def evaluate_exit(
             stop_loss_streak=stop_loss_streak,
             reversal_streak=reversal_streak,
             trailing_stop_streak=trailing_stop_streak,
+            catastrophic_streak=catastrophic_streak,
         )
 
     if position.scaled_out:
@@ -211,6 +257,7 @@ def evaluate_exit(
                     stop_loss_streak=stop_loss_streak,
                     reversal_streak=reversal_streak,
                     trailing_stop_streak=trailing_stop_streak,
+                    catastrophic_streak=catastrophic_streak,
                 )
         else:
             trailing_stop_streak = 0
@@ -223,3 +270,20 @@ def evaluate_exit(
         reversal_streak=reversal_streak,
         trailing_stop_streak=trailing_stop_streak,
     )
+
+
+def _is_long_underlying(position: PositionState) -> bool:
+    """Calls (long the underlying) put the stop below the entry price, puts above."""
+    return position.underlying_stop_price < position.entry_underlying_price
+
+
+def _underlying_stop_breached(position: PositionState, underlying_close: float) -> bool:
+    if _is_long_underlying(position):
+        return underlying_close <= position.underlying_stop_price
+    return underlying_close >= position.underlying_stop_price
+
+
+def _underlying_against_entry(position: PositionState, underlying_close: float) -> bool:
+    if _is_long_underlying(position):
+        return underlying_close < position.entry_underlying_price
+    return underlying_close > position.entry_underlying_price

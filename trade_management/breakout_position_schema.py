@@ -1,5 +1,7 @@
 import asyncpg
 
+from .position_state_schema import UNDERLYING_STOP_COLUMNS_SQL
+
 # The "Breakout Hunter" parallel options strategy (dashboard/breakout_loop.py)
 # keeps its open positions here, apart from trade_management_positions, so the
 # two strategies can independently hold the same underlying. Same DDL as
@@ -27,3 +29,4 @@ CREATE TABLE IF NOT EXISTS breakout_positions (
 async def apply_breakout_position_schema(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         await conn.execute(_BREAKOUT_POSITIONS_TABLE_SQL)
+        await conn.execute(UNDERLYING_STOP_COLUMNS_SQL.format(table="breakout_positions"))

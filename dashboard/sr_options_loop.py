@@ -33,7 +33,7 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 from alerts.models import Alert, Severity
-from broker.models import MultiLegOrderRequest, OptionRight
+from broker.models import OptionRight
 from decision_engine.models import TradeDirection
 from decision_engine.support_resistance import BACKTESTED_SR_CONFIG, sr_signal
 from execution.entry_confirmation import confirm_open_fill
@@ -44,8 +44,7 @@ from options.strategy_builders import MIN_TRADEABLE_CONTRACT_COST, build_long_ca
 from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
-from trade_management.close_confirmation import confirm_close_fill
-from trade_management.close_order_builder import build_close_order_request
+from trade_management.close_execution import close_with_price_walk
 from trade_management.expiry import trading_days_until
 from trade_management.models import PersistedLeg
 from trade_management.pnl import current_value_per_unit as compute_current_value_per_unit
@@ -54,6 +53,7 @@ from trade_management.sr_option_models import SROptionPositionRecord, SROptionPo
 from utils.time import is_equity_market_open, is_us_market_weekday, minutes_since_equity_open
 
 from .context import AppContext, get_effective_sr_options_account
+from .option_guards import spread_rejection
 from .trading_loop import EventCallback, _current_contracts_for_legs, _emit
 
 logger = logging.getLogger(__name__)
@@ -154,6 +154,11 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
             "sr options entry cycle skipped %s: contract net_debit $%.2f below tradeable floor $%.2f",
             symbol, strategy.net_debit, MIN_TRADEABLE_CONTRACT_COST,
         )
+        return
+
+    wide = spread_rejection(contract, context.settings.max_entry_spread_pct)
+    if wide is not None:
+        logger.info("sr options entry cycle skipped %s: %s", symbol, wide)
         return
 
     async with context.sr_options_entry_lock:
@@ -279,13 +284,9 @@ async def _manage_position(context: AppContext, record: SROptionPositionRecord, 
     )
     current_value = compute_current_value_per_unit(strategy, current_contracts)
 
-    close_request = build_close_order_request(strategy, record.state.qty, current_contracts)
-    if isinstance(close_request, MultiLegOrderRequest):
-        order = await context.broker.submit_multi_leg_order(close_request)
-    else:
-        order = await context.broker.submit_order(close_request)
-
-    fill = await confirm_close_fill(context.executor, context.broker, order.order_id, record.symbol)
+    fill = await close_with_price_walk(
+        context.broker, context.executor, strategy, record.state.qty, current_contracts, record.symbol
+    )
     if not fill.filled:
         return  # position stays tracked as-is; next cycle re-evaluates and retries
 

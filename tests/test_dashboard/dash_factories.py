@@ -104,6 +104,8 @@ def make_context(**overrides) -> AppContext:
         option_entry_open_blackout_minutes=0,
         entry_max_extension_atr=float("inf"),
         entry_max_range_position=float("inf"),
+        underlying_stop_atr_multiple=3.0,
+        max_entry_spread_pct=float("inf"),
         kelly_fraction=0.25,
         forex_confidence_threshold=92,
         forex_risk_pct_per_trade=0.02,
@@ -150,7 +152,7 @@ def make_context(**overrides) -> AppContext:
     # every close test to hand-build a matching filled Order. Tests
     # exercising a stuck/rejected close override
     # ctx.executor.await_fill directly.
-    async def _default_await_fill(order_id):
+    async def _default_await_fill(order_id, **_kwargs):
         for mock in (ctx.broker.submit_order, ctx.broker.submit_multi_leg_order):
             if mock.await_count and mock.call_args is not None:
                 request = mock.call_args.args[0]

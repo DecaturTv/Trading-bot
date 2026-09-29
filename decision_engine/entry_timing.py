@@ -63,12 +63,8 @@ def chase_rejection(
         return None
     price = bars_5m[-1].close  # latest print, including the forming bar
 
-    true_ranges = [
-        max(bar.high - bar.low, abs(bar.high - prev.close), abs(bar.low - prev.close))
-        for prev, bar in zip(completed[-atr_period - 1:-1], completed[-atr_period:])
-    ]
-    atr = sum(true_ranges) / len(true_ranges)
-    if atr <= 0:
+    atr = average_true_range(completed, atr_period)
+    if atr is None or atr <= 0:
         return None
 
     sign = 1.0 if direction is TradeDirection.BULLISH else -1.0
@@ -86,3 +82,36 @@ def chase_rejection(
         if position > max_range_position:
             return f"at {position:.2f} of the last {lookback_bars} bars' range (max {max_range_position:.2f})"
     return None
+
+
+def average_true_range(bars: Sequence[Bar], period: int = 14) -> float | None:
+    """Simple average of the last `period` true ranges; None without period+1 bars."""
+    if len(bars) < period + 1:
+        return None
+    true_ranges = [
+        max(bar.high - bar.low, abs(bar.high - prev.close), abs(bar.low - prev.close))
+        for prev, bar in zip(bars[-period - 1:-1], bars[-period:])
+    ]
+    return sum(true_ranges) / len(true_ranges)
+
+
+def underlying_stop_level(
+    bars_5m: Sequence[Bar], direction: TradeDirection, now: datetime, atr_multiple: float, atr_period: int = 14
+) -> tuple[float, float] | None:
+    """(entry underlying price, stop price) for an option entry, or None when
+    there isn't enough 5Min history to size the stop.
+
+    The stop sits atr_multiple 5Min ATRs beyond the latest price: below it
+    for a call, above it for a put. A 2026-09-29 replay of 72 option trades
+    against real option bars found stops on the underlying beat the -25%
+    premium stop at every multiple tried (1.5-6 ATR, all within ~$300 of each
+    other), so 3 is a middle value, not a tuned optimum.
+    """
+    if direction is TradeDirection.NEUTRAL or not bars_5m:
+        return None
+    atr = average_true_range(drop_forming_bar(bars_5m, "5Min", now), atr_period)
+    if atr is None or atr <= 0:
+        return None
+    price = bars_5m[-1].close
+    offset = atr_multiple * atr
+    return price, (price - offset if direction is TradeDirection.BULLISH else price + offset)

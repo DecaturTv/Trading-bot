@@ -202,6 +202,16 @@ class Settings(BaseSettings):
     # the trade's direction (1.0 = the high for a call, the low for a put).
     # Entries in the top third of that range: 39 trades, 2 wins, -$4.3k.
     entry_max_range_position: float = 0.75
+    # Option stops are judged on the underlying: at entry, the stop is set
+    # this many 5Min ATRs beyond the underlying's price (see
+    # decision_engine.entry_timing.underlying_stop_level) and fires when a
+    # completed 5Min bar closes through it. Momentum and breakout loops.
+    underlying_stop_atr_multiple: float = 3.0
+    # Skip option contracts whose bid-ask spread is wider than this fraction
+    # of the mid (all option loops). A wide book is where the old stops sold
+    # for pennies; VKTX puts (-$684, the worst trade 09-01..09-29) quote at a
+    # ~190% spread.
+    max_entry_spread_pct: float = 0.20
 
     # Option selection for the live entry loop
     option_target_delta: float = 0.15

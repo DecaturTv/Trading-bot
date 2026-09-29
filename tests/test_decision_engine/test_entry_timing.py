@@ -50,3 +50,12 @@ def test_put_bought_at_the_low_is_chasing_but_call_is_not():
 
 def test_not_enough_bars_allows_entry():
     assert chase_rejection(five_min_bars([100.0, 150.0]), TradeDirection.BULLISH, NOW, 2.0, 0.75) is None
+
+
+def test_underlying_stop_level_below_for_calls_above_for_puts():
+    from decision_engine.entry_timing import underlying_stop_level
+
+    bars = five_min_bars([100.0] * 20, spread=0.5) + [forming(100.0)]  # ATR = 1.0
+    assert underlying_stop_level(bars, TradeDirection.BULLISH, NOW, 3.0) == (100.0, 97.0)
+    assert underlying_stop_level(bars, TradeDirection.BEARISH, NOW, 3.0) == (100.0, 103.0)
+    assert underlying_stop_level(bars[:5], TradeDirection.BULLISH, NOW, 3.0) is None
