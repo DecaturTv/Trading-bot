@@ -206,6 +206,13 @@ class OandaAdapter:
         return {t["id"] for t in response.json()["trades"]}
 
     @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
+    async def get_open_trades(self) -> dict[str, tuple[str, int]]:
+        """trade ID -> (pair, signed current units) for every open trade."""
+        response = await self._client.get(f"/v3/accounts/{self._account_id}/openTrades")
+        response.raise_for_status()
+        return {t["id"]: (t["instrument"], int(float(t["currentUnits"]))) for t in response.json()["trades"]}
+
+    @retry(max_attempts=3, base_delay=0.5, exceptions=(httpx.HTTPError,))
     async def get_trade_realized_pnl(self, trade_id: str) -> float:
         response = await self._client.get(f"/v3/accounts/{self._account_id}/trades/{trade_id}")
         if response.status_code == 404:

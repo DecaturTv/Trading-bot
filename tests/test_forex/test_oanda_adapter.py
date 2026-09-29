@@ -358,3 +358,17 @@ async def test_close_trade_raises_when_not_filled():
     with pytest.raises(OandaError, match="MARKET_HALTED"):
         await adapter.close_trade("1")
     await adapter.aclose()
+
+
+@pytest.mark.asyncio
+async def test_get_open_trades_maps_id_to_pair_and_signed_units():
+    def handler(request):
+        assert request.url.path.endswith("/openTrades")
+        return httpx.Response(200, json={"trades": [
+            {"id": "11", "instrument": "EUR_USD", "currentUnits": "1000"},
+            {"id": "12", "instrument": "USD_JPY", "currentUnits": "-2500"},
+        ]})
+
+    trades = await make_adapter(handler).get_open_trades()
+
+    assert trades == {"11": ("EUR_USD", 1000), "12": ("USD_JPY", -2500)}

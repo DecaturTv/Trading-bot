@@ -1,4 +1,5 @@
-"""Broker-vs-tracking reconciliation for the shared Alpaca account.
+"""Broker-vs-tracking reconciliation: the equities sleeves against the shared
+Alpaca account, and the forex books against OANDA.
 
 Every equities sleeve (momentum options, breakout options, S/R options,
 direct stock, S/R stock) tracks its own positions in its own table, and all
@@ -16,6 +17,11 @@ The fill checks on entry and close (execution/entry_confirmation.py,
 trade_management/close_confirmation.py) close the known causes; this cycle
 is the backstop for whatever cause comes next. It only alerts -- it never
 edits tracking or trades, since the right fix depends on why it drifted.
+
+Forex is reconciled by OANDA trade ID rather than by pair -- both forex
+books (per-pair technical loop, cross-sectional momentum) record the exact
+trade they opened, so the ID is the precise key, and the xsmom rebalance
+deliberately drops tracking when a close fails (a stray by construction).
 
 A discrepancy must show up on two consecutive runs before it alerts: a fill
 lands at the broker a moment before the loop persists it (and a close
@@ -60,6 +66,14 @@ class ReconciliationState:
     previous: set[Discrepancy] = field(default_factory=set)
 
 
+@dataclass(frozen=True)
+class _Book:
+    name: str  # shown in alerts: "equities" / "forex"
+    tracked: dict[str, float]
+    held: dict[str, float]
+    ignore: frozenset[str]
+
+
 def diff_positions(tracked: dict[str, float], held: dict[str, float], ignore: frozenset[str] = frozenset()) -> set[Discrepancy]:
     """Compares absolute quantities per broker symbol (OCC symbol for options).
     Absolute because tracking stores unsigned qty and a sell-side leg shows up
@@ -91,24 +105,63 @@ async def tracked_quantities(context: AppContext) -> dict[str, float]:
     return dict(tracked)
 
 
-async def reconciliation_cycle(context: AppContext, now: datetime, state: ReconciliationState) -> None:
+async def tracked_forex_units(context: AppContext) -> dict[str, float]:
+    """Both forex books' tracked trades, keyed "PAIR:trade_id" so alerts name
+    the pair and the ignore list can match either the pair or one trade."""
+    tracked: dict[str, float] = {}
+    for pos in await context.forex_position_repository.get_all():
+        tracked[f"{pos.pair}:{pos.oanda_trade_id}"] = pos.units
+    if context.forex_xsmom_repository is not None:
+        for pos in await context.forex_xsmom_repository.get_all():
+            tracked[f"{pos.pair}:{pos.oanda_trade_id}"] = pos.units
+    return tracked
+
+
+async def _equities_book(context: AppContext, ignore: frozenset[str]) -> _Book:
     tracked = await tracked_quantities(context)
     held = {p.symbol: p.qty for p in await context.broker.get_positions()}
+    return _Book("equities", tracked, held, ignore)
+
+
+async def _forex_book(context: AppContext, ignore: frozenset[str]) -> _Book:
+    tracked = await tracked_forex_units(context)
+    held = {f"{pair}:{trade_id}": units for trade_id, (pair, units) in (await context.forex_broker.get_open_trades()).items()}
+    # Let a whole pair ("EUR_USD") be ignored as well as a single "EUR_USD:1234" trade.
+    keys = tracked.keys() | held.keys()
+    ignore = ignore | {k for k in keys if k.split(":", 1)[0] in ignore}
+    return _Book("forex", tracked, held, ignore)
+
+
+async def reconciliation_cycle(context: AppContext, now: datetime, state: ReconciliationState) -> None:
     ignore = frozenset(context.settings.reconciliation_ignore_symbols)
+    builders = [_equities_book]
+    if context.forex_broker is not None and context.forex_position_repository is not None:
+        builders.append(_forex_book)
 
-    current = diff_positions(tracked, held, ignore)
-    confirmed = current & state.previous
-    state.previous = current
+    current: dict[Discrepancy, str] = {}
+    for build in builders:
+        # One broker being unreachable shouldn't blind the check on the other.
+        try:
+            book = await build(context, ignore)
+        except Exception:
+            logger.exception("reconciliation: could not read the %s book this run", build.__name__.strip("_").removesuffix("_book"))
+            continue
+        found = diff_positions(book.tracked, book.held, book.ignore)
+        logger.info(
+            "reconciliation (%s): %d tracked, %d held at broker, %d discrepancies",
+            book.name, len(book.tracked), len(book.held), len(found),
+        )
+        current.update({d: book.name for d in found})
 
-    logger.info(
-        "reconciliation: %d tracked, %d held at broker, %d discrepancies (%d confirmed)",
-        len(tracked), len(held), len(current), len(confirmed),
-    )
+    confirmed = current.keys() & state.previous
+    state.previous = set(current)
+
     for d in sorted(confirmed, key=lambda d: d.symbol):
-        logger.warning("reconciliation discrepancy: %s", d.describe())
+        book_name = current[d]
+        logger.warning("reconciliation discrepancy (%s): %s", book_name, d.describe())
         await context.alert_manager.send(
             Alert(
-                title=f"Position mismatch: {d.symbol}",
+                title=f"Position mismatch ({book_name}): {d.symbol}",
                 message=(
                     f"{d.describe()}. Nothing was changed automatically -- check the broker and the tracking table. "
                     "Add the symbol to RECONCILIATION_IGNORE_SYMBOLS if it's a known, deliberately untracked position."
