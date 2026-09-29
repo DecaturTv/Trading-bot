@@ -1,7 +1,7 @@
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -300,6 +300,14 @@ class Settings(BaseSettings):
     congress_lookback_days: int = 30
     congress_sync_interval_hours: int = 6
 
+    # Broker-vs-tracking reconciliation (dashboard/reconciliation_loop.py):
+    # alerts when the equities sleeves' tracked positions and what Alpaca
+    # actually holds disagree. Ignore list is comma-separated broker symbols
+    # (OCC symbols for options) for positions deliberately left untracked,
+    # e.g. RECONCILIATION_IGNORE_SYMBOLS=INTC.
+    reconciliation_interval_seconds: int = 600
+    reconciliation_ignore_symbols: Annotated[tuple[str, ...], NoDecode] = ()
+
     @model_validator(mode="after")
     def _enforce_live_trading_gate(self) -> "Settings":
         if self.trading_mode == "live" and not self.live_risk_ack:
@@ -307,6 +315,13 @@ class Settings(BaseSettings):
                 "TRADING_MODE=live requires I_UNDERSTAND_LIVE_RISK=true to also be set explicitly."
             )
         return self
+
+    @field_validator("reconciliation_ignore_symbols", mode="before")
+    @classmethod
+    def _split_symbols(cls, value):
+        if isinstance(value, str):
+            return tuple(s.strip().upper() for s in value.split(",") if s.strip())
+        return value
 
     @field_validator("confidence_threshold", "forex_confidence_threshold", "stock_confidence_threshold")
     @classmethod

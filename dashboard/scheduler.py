@@ -17,6 +17,7 @@ from .forex_loop import (
     forex_position_management_cycle,
     forex_progress_report_cycle,
 )
+from .reconciliation_loop import ReconciliationState, reconciliation_cycle
 from .forex_xsmom_loop import forex_xsmom_rebalance_cycle, forex_xsmom_sync_cycle
 from .sr_options_loop import (
     sr_options_entry_cycle,
@@ -130,6 +131,11 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
     async def _sr_options_loss_limit_job():
         await sr_options_loss_limit_check_cycle(context, datetime.now(timezone.utc))
 
+    reconciliation_state = ReconciliationState()
+
+    async def _reconciliation_job():
+        await reconciliation_cycle(context, datetime.now(timezone.utc), reconciliation_state)
+
     async def _sr_options_progress_report_job():
         await sr_options_progress_report_cycle(context, datetime.now(timezone.utc))
 
@@ -194,6 +200,13 @@ def build_scheduler(context: AppContext, on_event: EventCallback = None) -> Asyn
         (_sr_options_loss_limit_job, context.settings.position_check_interval_seconds, "sr_options_loss_limit_check"),
     ):
         scheduler.add_job(job, IntervalTrigger(seconds=seconds), id=job_id, max_instances=1, coalesce=True)
+
+    # Runs around the clock, not just market hours: expirations, exercises and
+    # assignments change the broker's book overnight.
+    scheduler.add_job(
+        _reconciliation_job, IntervalTrigger(seconds=context.settings.reconciliation_interval_seconds),
+        id="position_reconciliation", max_instances=1, coalesce=True,
+    )
 
     if context.progress_notifier is not None:
         # Twice per trading day: a midday check-in and one ~10 min after the
