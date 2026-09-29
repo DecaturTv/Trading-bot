@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 from alerts.models import Alert, Severity
 from broker.models import MultiLegOrderRequest, OptionRight
 from decision_engine.confirmation import is_confirmed, update_streak
+from decision_engine.entry_timing import chase_rejection, drop_forming_bar
 from decision_engine.models import TradeDirection
 from execution.entry_confirmation import confirm_open_fill
 from ml.trade_outcomes import get_live_trade_statistics
@@ -22,7 +23,7 @@ from trade_management.exit_rules import evaluate_exit
 from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, OpenPositionRecord, PersistedLeg, PositionState
 from trade_management.pnl import current_value_per_unit as compute_current_value_per_unit
-from utils.time import is_equity_market_open, is_us_market_weekday
+from utils.time import is_equity_market_open, is_us_market_weekday, minutes_since_equity_open
 
 from .context import AppContext, get_effective_account
 
@@ -66,6 +67,10 @@ async def entry_cycle(context: AppContext, now: datetime, on_event: EventCallbac
     if await context.halt_manager.is_halted("equities"):
         logger.info("entry cycle (%s) skipped: trading halted", timeframe)
         return
+    blackout = context.settings.option_entry_open_blackout_minutes
+    if minutes_since_equity_open(now) < blackout:
+        logger.info("entry cycle (%s) skipped: inside the first %d minutes after the open", timeframe, blackout)
+        return
 
     account = await get_effective_account(context)
     # Underlying price is a proxy, not the real contract cost (net_debit) --
@@ -90,7 +95,10 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
 
     lookback_days = _LOOKBACK_DAYS_BY_TIMEFRAME.get(timeframe, _BARS_LOOKBACK_DAYS)
     await context.ingestion_service.ingest_incremental(symbol, timeframe, end=now)
-    bars = await context.bars_repository.get_bars(symbol, timeframe, now - timedelta(days=lookback_days), now)
+    raw_bars = await context.bars_repository.get_bars(symbol, timeframe, now - timedelta(days=lookback_days), now)
+    # Score completed bars only, so a signal (and its confirmation streak
+    # below) can't flicker with a bar that's still forming.
+    bars = drop_forming_bar(raw_bars, timeframe, now)
     if len(bars) < _MIN_BARS_FOR_SIGNAL:
         return
 
@@ -118,19 +126,48 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
     )
 
     # Require the signal to hold for signal_confirmation_count consecutive
-    # scans (on this timeframe) before acting on it -- a single noisy tick
-    # shouldn't be enough to open a position. See config/settings.py
-    # signal_confirmation_count.
+    # completed bars (on this timeframe) before acting on it, as the
+    # backtest does -- a single noisy bar shouldn't be enough to open a
+    # position. The streak used to count scans: with the 5Min cycle polling
+    # every 60s, "3 confirmations" was ~2 minutes on one still-forming bar,
+    # and on 2026-09-29 every entry fired 09:31-09:38. updated_at stores the
+    # last bar counted, so rescanning the same bar doesn't advance it. See
+    # config/settings.py signal_confirmation_count.
     confirmation = await context.signal_confirmation_repository.get(symbol, _SIGNAL_VEHICLE, timeframe)
-    previous_direction = confirmation.direction if confirmation else None
-    previous_streak = confirmation.streak if confirmation else 0
-    streak = update_streak(signal.direction, previous_direction, previous_streak)
-    await context.signal_confirmation_repository.upsert(symbol, _SIGNAL_VEHICLE, timeframe, signal.direction, streak, now)
+    last_bar_at = bars[-1].timestamp
+    if confirmation and confirmation.direction == signal.direction and confirmation.updated_at >= last_bar_at:
+        streak = confirmation.streak
+    else:
+        previous_direction = confirmation.direction if confirmation else None
+        previous_streak = confirmation.streak if confirmation else 0
+        streak = update_streak(signal.direction, previous_direction, previous_streak)
+        await context.signal_confirmation_repository.upsert(
+            symbol, _SIGNAL_VEHICLE, timeframe, signal.direction, streak, last_bar_at
+        )
     if not is_confirmed(streak, context.settings.signal_confirmation_count):
         logger.info(
             "entry cycle (%s) skipped %s: signal %s met threshold but awaiting confirmation (%d/%d)",
             timeframe, symbol, signal.direction.value, streak, context.settings.signal_confirmation_count,
         )
+        return
+
+    # Don't buy the top of a move that already happened: wait for the
+    # underlying to pull back or consolidate. The confirmed streak is kept, so
+    # the entry is retried on later scans. See decision_engine/entry_timing.py.
+    if timeframe == "5Min":
+        bars_5m = raw_bars
+    else:
+        await context.ingestion_service.ingest_incremental(symbol, "5Min", end=now)
+        bars_5m = await context.bars_repository.get_bars(
+            symbol, "5Min", now - timedelta(days=_LOOKBACK_DAYS_BY_TIMEFRAME["5Min"]), now
+        )
+    chasing = chase_rejection(
+        bars_5m, signal.direction, now,
+        context.settings.entry_max_extension_atr, context.settings.entry_max_range_position,
+    )
+    if chasing is not None:
+        logger.info("entry cycle (%s) skipped %s: %s entry would chase the move -- %s",
+                    timeframe, symbol, signal.direction.value, chasing)
         return
 
     right = OptionRight.CALL if signal.direction is TradeDirection.BULLISH else OptionRight.PUT

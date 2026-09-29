@@ -45,3 +45,11 @@ def is_forex_market_open(moment: datetime | None = None) -> bool:
     if weekday == 4:
         return moment.time() < _FOREX_WEEKEND_BOUNDARY
     return True
+
+
+def minutes_since_equity_open(moment: datetime | None = None) -> float:
+    """Minutes since today's 09:30 ET open; negative before it. Pair with
+    is_equity_market_open -- this doesn't check weekends or the close."""
+    moment = (moment or now_eastern()).astimezone(EASTERN)
+    open_today = moment.replace(hour=_EQUITY_OPEN.hour, minute=_EQUITY_OPEN.minute, second=0, microsecond=0)
+    return (moment - open_today).total_seconds() / 60

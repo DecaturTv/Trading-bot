@@ -1091,3 +1091,49 @@ async def test_entry_cycle_tracks_only_the_filled_qty_on_a_partial_entry_fill():
     assert context.executor.execute.call_args.args[1] > 1  # sized for more than what filled
     record = context.position_repository.upsert.await_args.args[0]
     assert record.state.qty == 1
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_skips_during_opening_blackout():
+    context = make_context()
+    context.settings.option_entry_open_blackout_minutes = 30
+    ten_to_ten_et = datetime(2026, 7, 21, 13, 50, tzinfo=timezone.utc)
+
+    await entry_cycle(context, ten_to_ten_et)
+
+    context.universe_manager.get_universe.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_rescanning_same_bar_does_not_advance_confirmation():
+    from decision_engine.signal_confirmation_repository import SignalConfirmationState
+
+    context = make_context()
+    context.settings.signal_confirmation_count = 3
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    bars = make_bars(n=40)
+    context.bars_repository.get_bars.return_value = bars
+    context.decision_model.score.return_value = bullish_signal(confidence=95.0)
+    # streak 2 already recorded against the latest completed bar
+    context.signal_confirmation_repository.get.return_value = SignalConfirmationState(
+        direction=TradeDirection.BULLISH, streak=2, updated_at=bars[-2].timestamp,
+    )
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.signal_confirmation_repository.upsert.assert_not_awaited()
+    context.broker.get_option_chain.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_skips_when_entry_would_chase_the_move():
+    context = make_context()
+    context.settings.entry_max_extension_atr = 2.0
+    context.settings.entry_max_range_position = 0.75
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)  # straight-line rally
+    context.decision_model.score.return_value = bullish_signal(confidence=95.0)
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.get_option_chain.assert_not_awaited()

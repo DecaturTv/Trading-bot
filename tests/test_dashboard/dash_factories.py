@@ -99,6 +99,11 @@ def make_context(**overrides) -> AppContext:
         # have dedicated tests that override this to exercise the
         # confirmation-persistence gate itself.
         signal_confirmation_count=1,
+        # Entry-timing guards off by default (fixtures run at ~11am ET with
+        # synthetic daily-spaced bars); dedicated tests turn them on.
+        option_entry_open_blackout_minutes=0,
+        entry_max_extension_atr=float("inf"),
+        entry_max_range_position=float("inf"),
         kelly_fraction=0.25,
         forex_confidence_threshold=92,
         forex_risk_pct_per_trade=0.02,

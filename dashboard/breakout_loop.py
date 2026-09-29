@@ -43,7 +43,7 @@ from trade_management.exit_rules import evaluate_exit
 from trade_management.expiry import trading_days_until
 from trade_management.models import ExitAction, OpenPositionRecord, PersistedLeg, PositionState
 from trade_management.pnl import current_value_per_unit as compute_current_value_per_unit
-from utils.time import is_equity_market_open, is_us_market_weekday
+from utils.time import is_equity_market_open, is_us_market_weekday, minutes_since_equity_open
 
 from .context import AppContext, get_effective_breakout_account
 from .trading_loop import (
@@ -76,6 +76,11 @@ async def breakout_entry_cycle(
         return
     if await context.halt_manager.is_halted(_HALT_SCOPE):
         logger.info("breakout entry cycle (%s) skipped: trading halted", timeframe)
+        return
+    # See config/settings.py option_entry_open_blackout_minutes.
+    blackout = context.settings.option_entry_open_blackout_minutes
+    if minutes_since_equity_open(now) < blackout:
+        logger.info("breakout entry cycle (%s) skipped: inside the first %d minutes after the open", timeframe, blackout)
         return
 
     account = await get_effective_breakout_account(context)

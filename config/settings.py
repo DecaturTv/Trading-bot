@@ -189,6 +189,20 @@ class Settings(BaseSettings):
     # on open positions (see TradeManagementConfig.reversal_confirmation_count).
     signal_confirmation_count: int = 3
 
+    # Entry-timing guards (2026-09-29; see decision_engine/entry_timing.py).
+    # No new option entries (momentum, breakout, S/R) this many minutes
+    # after the 09:30 open. Of the option entries from 09-01 to 09-29, the
+    # 31 in the first 15 minutes won 6% and lost $4.0k (spreads are widest
+    # then, and the opening move is noise the stop can't survive).
+    option_entry_open_blackout_minutes: int = 30
+    # Momentum options loop only: skip an entry whose underlying has already
+    # run more than this many 5Min ATRs over the last hour...
+    entry_max_extension_atr: float = 2.0
+    # ...or sits above this fraction of the last hour's range, measured in
+    # the trade's direction (1.0 = the high for a call, the low for a put).
+    # Entries in the top third of that range: 39 trades, 2 wins, -$4.3k.
+    entry_max_range_position: float = 0.75
+
     # Option selection for the live entry loop
     option_target_delta: float = 0.15
     option_target_dte: int = 25

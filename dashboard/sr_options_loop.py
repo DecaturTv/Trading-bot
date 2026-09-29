@@ -51,7 +51,7 @@ from trade_management.models import PersistedLeg
 from trade_management.pnl import current_value_per_unit as compute_current_value_per_unit
 from trade_management.sr_exit_rules import BACKTESTED_SR_EXIT_CONFIG, SRExitAction, evaluate_sr_exit
 from trade_management.sr_option_models import SROptionPositionRecord, SROptionPositionState
-from utils.time import is_equity_market_open, is_us_market_weekday
+from utils.time import is_equity_market_open, is_us_market_weekday, minutes_since_equity_open
 
 from .context import AppContext, get_effective_sr_options_account
 from .trading_loop import EventCallback, _current_contracts_for_legs, _emit
@@ -78,6 +78,11 @@ async def sr_options_entry_cycle(context: AppContext, now: datetime, on_event: E
         return
     if await context.halt_manager.is_halted(_HALT_SCOPE):
         logger.info("sr options entry cycle skipped: trading halted")
+        return
+    # See config/settings.py option_entry_open_blackout_minutes.
+    blackout = context.settings.option_entry_open_blackout_minutes
+    if minutes_since_equity_open(now) < blackout:
+        logger.info("sr options entry cycle skipped: inside the first %d minutes after the open", blackout)
         return
 
     account = await get_effective_sr_options_account(context)

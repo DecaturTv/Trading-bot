@@ -1,7 +1,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from utils.time import EASTERN, is_equity_market_open, is_forex_market_open
+from utils.time import EASTERN, is_equity_market_open, is_forex_market_open, minutes_since_equity_open
 
 ET = ZoneInfo("America/New_York")
 
@@ -52,3 +52,9 @@ def test_forex_open_midweek():
 
 def test_eastern_constant_matches():
     assert EASTERN.key == "America/New_York"
+
+
+def test_minutes_since_equity_open():
+    assert minutes_since_equity_open(et(2026, 7, 21, 9, 45)) == 15
+    assert minutes_since_equity_open(et(2026, 7, 21, 9, 0)) == -30
+    assert minutes_since_equity_open(datetime(2026, 7, 21, 15, 0, tzinfo=ZoneInfo("UTC"))) == 90
