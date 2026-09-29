@@ -7,6 +7,7 @@ from alerts.models import Alert, Severity
 from broker.models import OrderRequest, OrderSide, OrderType, TimeInForce
 from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
+from execution.entry_confirmation import confirm_open_fill
 from ml.trade_outcomes import get_live_trade_statistics
 from risk.sizing import contracts_for_budget, position_budget_dollars
 from risk.streak import current_positive_day_streak, streak_adjusted_fraction
@@ -172,6 +173,11 @@ async def _maybe_enter_stock(context: AppContext, symbol: str, now: datetime, on
                 time_in_force=TimeInForce.DAY, limit_price=entry_price,
             )
         )
+        fill = await confirm_open_fill(context.executor, context.broker, order.order_id, symbol)
+        if not fill.filled:
+            return  # nothing to track; the next entry cycle can try again
+        qty = int(fill.filled_qty)
+        entry_price = fill.order.filled_avg_price or entry_price
 
         record = OpenStockPositionRecord(
             symbol=symbol,

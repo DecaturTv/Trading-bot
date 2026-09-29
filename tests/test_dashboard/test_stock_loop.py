@@ -633,3 +633,46 @@ async def test_position_management_scales_out_a_fraction_at_profit_target():
     persisted = context.stock_position_repository.upsert.call_args.args[0]
     assert persisted.state.qty == 5
     assert persisted.state.scaled_out is True
+
+
+def _wire_stock_entry(context):
+    context.universe_manager.get_active_symbols.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_latest_quote.return_value = make_quote(ask=100.0)
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.broker.get_account.return_value = make_account(equity=10000.0)
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+    context.broker.submit_order.return_value = make_order()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_does_not_track_a_position_when_entry_order_never_fills():
+    context = make_context()
+    _wire_stock_entry(context)
+    unfilled = make_order()
+    context.executor.await_fill = AsyncMock(
+        return_value=Order(**{**unfilled.__dict__, "status": OrderStatus.EXPIRED})
+    )
+
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.broker.submit_order.assert_awaited_once()
+    context.stock_position_repository.upsert.assert_not_awaited()
+    context.alert_manager.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_records_actual_fill_qty_and_price():
+    context = make_context()
+    _wire_stock_entry(context)
+    unfilled = make_order()
+    context.executor.await_fill = AsyncMock(
+        return_value=Order(**{**unfilled.__dict__, "status": OrderStatus.CANCELED, "filled_qty": 6, "filled_avg_price": 99.8})
+    )
+
+    await stock_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    record = context.stock_position_repository.upsert.await_args.args[0]
+    assert record.state.qty == 6
+    assert record.state.entry_cost_per_unit == 99.8

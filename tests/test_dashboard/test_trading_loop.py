@@ -1039,3 +1039,55 @@ async def test_position_management_cycle_scales_out_a_fraction_at_profit_target(
     persisted = context.position_repository.upsert.call_args.args[0]
     assert persisted.state.qty == 1  # int(2 * 0.5)
     assert persisted.state.scaled_out is True
+
+
+def _entry_order(status, qty, filled_qty):
+    return Order(
+        order_id="o-1", symbol="AAPL", qty=qty, side=OrderSide.BUY, order_type=OrderType.LIMIT, status=status,
+        filled_qty=filled_qty, filled_avg_price=None, submitted_at=None, filled_at=None,
+    )
+
+
+def _wire_options_entry(context):
+    context.universe_manager.get_universe.return_value = ["AAPL"]
+    context.bars_repository.get_bars.return_value = make_bars(n=40)
+    context.decision_model.score.return_value = bullish_signal()
+    context.broker.get_option_chain.return_value = make_chain([(95, 0.65), (100, 0.50), (105, 0.35)])
+    context.pre_trade_checker.evaluate.return_value = _PassingCheck()
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.1, position_fraction=0.1, used_fallback=True)
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_does_not_track_a_position_when_entry_order_never_fills():
+    """ETHA/NVDL/ONDS/SOXS (2026-09-01/02): the DAY limit entry expired unfilled
+    at Alpaca but a position was persisted anyway and tracked for four weeks."""
+    context = make_context()
+    _wire_options_entry(context)
+    context.executor.await_fill = AsyncMock(return_value=_entry_order(OrderStatus.EXPIRED, qty=2, filled_qty=0))
+
+    events = []
+    await entry_cycle(context, MARKET_OPEN_TUESDAY, on_event=events.append)
+
+    context.executor.execute.assert_awaited_once()
+    context.position_repository.upsert.assert_not_awaited()
+    context.alert_manager.send.assert_not_awaited()
+    assert events == []
+
+
+@pytest.mark.asyncio
+async def test_entry_cycle_tracks_only_the_filled_qty_on_a_partial_entry_fill():
+    context = make_context()
+    _wire_options_entry(context)
+    context.kelly_sizer.size.return_value = KellyResult(full_kelly_fraction=0.5, position_fraction=0.5, used_fallback=True)
+
+    async def _partial(order_id):
+        requested = context.executor.execute.call_args.args[1]
+        return _entry_order(OrderStatus.CANCELED, qty=requested, filled_qty=1)
+
+    context.executor.await_fill = AsyncMock(side_effect=_partial)
+
+    await entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    assert context.executor.execute.call_args.args[1] > 1  # sized for more than what filled
+    record = context.position_repository.upsert.await_args.args[0]
+    assert record.state.qty == 1

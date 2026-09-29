@@ -27,6 +27,7 @@ from alerts.models import Alert, Severity
 from broker.models import OrderRequest, OrderSide, OrderType, TimeInForce
 from decision_engine.models import TradeDirection
 from decision_engine.support_resistance import BACKTESTED_SR_CONFIG, sr_signal
+from execution.entry_confirmation import confirm_open_fill
 from ml.trade_outcomes import get_live_trade_statistics
 from risk.halt_manager import evaluate_loss_limits
 from risk.sizing import contracts_for_budget, position_budget_dollars
@@ -140,6 +141,11 @@ async def _maybe_enter(context: AppContext, symbol: str, now: datetime, on_event
                 time_in_force=TimeInForce.DAY, limit_price=entry_price,
             )
         )
+        fill = await confirm_open_fill(context.executor, context.broker, order.order_id, symbol)
+        if not fill.filled:
+            return  # nothing to track; the next entry cycle can try again
+        qty = int(fill.filled_qty)
+        entry_price = fill.order.filled_avg_price or entry_price
 
         record = OpenSRStockPositionRecord(
             symbol=symbol,

@@ -135,7 +135,8 @@ def make_context(**overrides) -> AppContext:
     ctx.halt_manager.is_halted.return_value = False
     ctx.executor = AsyncMock()
 
-    # confirm_close_fill() (trade_management/close_confirmation.py) polls
+    # confirm_close_fill() (trade_management/close_confirmation.py) and
+    # confirm_open_fill() (execution/entry_confirmation.py) poll
     # ctx.executor.await_fill(order_id) after every close order before a
     # management-cycle test's pnl/repository assertions can fire. Default it
     # to "whatever was just submitted filled completely" by reading the qty
@@ -156,6 +157,15 @@ def make_context(**overrides) -> AppContext:
                         status=OrderStatus.FILLED, filled_qty=qty, filled_avg_price=None,
                         submitted_at=None, filled_at=None,
                     )
+        # confirm_open_fill() on option entries: those go through the mocked
+        # ctx.executor.execute(strategy, qty), not broker.submit_*, so read the
+        # qty off that call instead.
+        if ctx.executor.execute.await_count and ctx.executor.execute.call_args is not None:
+            qty = ctx.executor.execute.call_args.args[1]
+            return Order(
+                order_id=order_id, symbol="", qty=qty, side=OrderSide.BUY, order_type=OrderType.LIMIT,
+                status=OrderStatus.FILLED, filled_qty=qty, filled_avg_price=None, submitted_at=None, filled_at=None,
+            )
         return Order(
             order_id=order_id, symbol="", qty=0, side=OrderSide.SELL, order_type=OrderType.LIMIT,
             status=OrderStatus.FILLED, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,

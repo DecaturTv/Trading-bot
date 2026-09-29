@@ -29,6 +29,7 @@ from alerts.models import Alert, Severity
 from broker.models import MultiLegOrderRequest, OptionRight
 from decision_engine.confirmation import is_confirmed, update_streak
 from decision_engine.models import TradeDirection
+from execution.entry_confirmation import confirm_open_fill
 from ml.trade_outcomes import get_live_trade_statistics
 from options.models import OptionLeg, OptionStrategy
 from options.selection import select_expiration, select_strike_by_delta
@@ -226,6 +227,10 @@ async def _maybe_enter(
             return
 
         result = await context.executor.execute(strategy, qty)
+        fill = await confirm_open_fill(context.executor, context.broker, result.order.order_id, symbol)
+        if not fill.filled:
+            return  # nothing to track; the next entry cycle can try again
+        qty = int(fill.filled_qty)
 
         leg = strategy.legs[0]
         record = OpenPositionRecord(

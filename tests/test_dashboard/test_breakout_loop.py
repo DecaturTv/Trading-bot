@@ -231,3 +231,18 @@ async def test_paper_loss_limit_notifies_on_breakout_scope_with_dedup_key():
     alert = context.alert_manager.send.await_args.args[0]
     assert "breakout" in alert.title.lower()
     assert alert.dedup_key == "loss-limit-breach-breakout-paper"
+
+
+@pytest.mark.asyncio
+async def test_entry_does_not_track_a_breakout_position_when_entry_order_never_fills():
+    context = make_context()
+    _wire_entry(context)
+    context.executor.await_fill = AsyncMock(return_value=Order(
+        order_id="o-1", symbol="AAPL", qty=2, side=OrderSide.BUY, order_type=OrderType.LIMIT,
+        status=OrderStatus.EXPIRED, filled_qty=0, filled_avg_price=None, submitted_at=None, filled_at=None,
+    ))
+
+    await breakout_entry_cycle(context, MARKET_OPEN_TUESDAY)
+
+    context.executor.execute.assert_awaited_once()
+    context.breakout_position_repository.upsert.assert_not_awaited()
